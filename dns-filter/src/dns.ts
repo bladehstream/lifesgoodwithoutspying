@@ -1,3 +1,5 @@
+import { allocBuffer } from './buffer';
+
 export interface DnsQuestion {
   name: string;
   end: number;
@@ -186,7 +188,7 @@ export function makeErrorResponse(query: Buffer, parsed: DnsQuery, rcode: number
   }
 
   const questionLength = parsed.questionEnd - 12;
-  const response = Buffer.alloc(12 + questionLength);
+  const response = allocBuffer(12 + questionLength);
   query.copy(response, 0, 0, 2);
 
   // QR + the client's RD bit + the rcode. Other response bits are controlled

@@ -6,6 +6,8 @@ const os = require('os');
 const path = require('path');
 
 const bundle = path.join(__dirname, '..', 'dist', 'nospy-dns-filter.js');
+// NOSPY_DNS_NODE runs the bundle under another Node, such as the 0.12 on webOS 3.x.
+const runtime = process.env.NOSPY_DNS_NODE || process.execPath;
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nospy-status-'));
 const artifact = path.join(directory, 'domains.txt');
 const statusFile = path.join(directory, 'status');
@@ -13,7 +15,7 @@ fs.writeFileSync(
   artifact,
   '# lifesgoodwithoutspying dns-filter generation smoke-one rules 1\none.example.test\n',
 );
-const child = childProcess.spawn(process.execPath, [
+const child = childProcess.spawn(runtime, [
   bundle,
   '--listen-address', '127.0.0.1',
   '--listen-port', '0',
