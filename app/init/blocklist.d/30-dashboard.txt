@@ -16,6 +16,10 @@ aic.cdpbeacon.lgtvcommon.com
 eic.cdpbeacon.lgtvcommon.com
 kic.cdpbeacon.lgtvcommon.com
 ruc.cdpbeacon.lgtvcommon.com
+# Second-generation ad beacon (reporting config, video-event beacons)
+aic.cdpbeacon2.lgtvcommon.com
+eic.cdpbeacon2.lgtvcommon.com
+kic.cdpbeacon2.lgtvcommon.com
 aic.cdplauncher.lgtvcommon.com
 eic.cdplauncher.lgtvcommon.com
 kic.cdplauncher.lgtvcommon.com

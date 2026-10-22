@@ -14,6 +14,7 @@ conf_default() {
         domains.smartad)    echo on ;;
         domains.quickset)   echo off ;;
         domains.dashboard)  echo on ;;
+        domains.wiselg)     echo off ;;
         domains.telemetry)  echo on ;;
         domains.sdp)        echo on ;;
         domains.lgchannels) echo off ;;
@@ -66,7 +67,7 @@ conf_keys() {
     printf '%s\n' \
         domains.acr domains.smartad domains.quickset domains.dashboard \
         domains.telemetry domains.sdp domains.lgchannels domains.updates \
-        domains.thinq dns.filter dns.disable_ipv6 voice.stop ads.stop lan.block purge.boot
+        domains.thinq domains.wiselg dns.filter dns.disable_ipv6 voice.stop ads.stop lan.block purge.boot
 }
 
 # Newline-separated list of domain category keys.
@@ -74,7 +75,7 @@ domain_keys() {
     printf '%s\n' \
         domains.smartad domains.quickset domains.acr domains.dashboard \
         domains.telemetry domains.sdp domains.lgchannels domains.updates \
-        domains.thinq
+        domains.thinq domains.wiselg
 }
 
 # Map a blocklist category key to its blocklist file name.
@@ -84,6 +85,7 @@ cat_file_for_key() {
         domains.quickset)   echo "15-quickset.txt" ;;
         domains.acr)        echo "20-acr.txt" ;;
         domains.dashboard)  echo "30-dashboard.txt" ;;
+        domains.wiselg)     echo "35-wiselg.txt" ;;
         domains.telemetry)  echo "40-telemetry.txt" ;;
         domains.sdp)        echo "45-sdp.txt" ;;
         domains.thinq)      echo "50-thinq.txt" ;;

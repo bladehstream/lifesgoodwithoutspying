@@ -7,6 +7,11 @@ app.lgwebostv.com
 elastic.lgwebostv.com
 eic-rum.elsa.lgecloudapm.com
 lgecloudapm.com
+# OCP usage uploads (usage counters, picture settings, pixel-refresh stats).
+# Also listed in 50-thinq.txt; collect_domains drops the duplicates.
+aic-ocp.lgtviot.com
+eic-ocp.lgtviot.com
+kic-ocp.lgtviot.com
 # Regional APM hosts (verified resolving 2026-09-16)
 ae.app.lgwebostv.com
 ar.app.lgwebostv.com

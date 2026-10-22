@@ -45,8 +45,9 @@ unmount_ours() {
     done
 }
 
-# Emit enabled domains. During the initial sink build, domains.sdp is held
-# back so the other protections can take effect immediately.
+# Emit enabled domains, once each: a host can sit in more than one category.
+# During the initial sink build, domains.sdp is held back so the other
+# protections can take effect immediately.
 collect_domains() {
     mode="$1"
     domain_keys > "$KEYS_TMP"
@@ -62,7 +63,7 @@ collect_domains() {
         [ -n "$file" ] || continue
         [ -f "$BLOCKDIR/$file" ] || continue
         grep -v '^[[:space:]]*#' "$BLOCKDIR/$file" | grep -v '^[[:space:]]*$'
-    done < "$KEYS_TMP"
+    done < "$KEYS_TMP" | awk '!seen[$0]++'
 }
 
 mount_generated_hosts() {
