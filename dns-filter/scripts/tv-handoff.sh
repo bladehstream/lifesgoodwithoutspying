@@ -46,6 +46,9 @@ HELPER_PORT="${NOSPY_DNS_HELPER_PORT:-5354}"
 HELPER_UPSTREAM_SPORT="${NOSPY_DNS_HELPER_UPSTREAM_SPORT:-15354}"
 HELPER_UPSTREAM_TCP_PORT_START="${NOSPY_DNS_HELPER_UPSTREAM_TCP_PORT_START:-15355}"
 HELPER_UPSTREAM_TCP_PORT_END="${NOSPY_DNS_HELPER_UPSTREAM_TCP_PORT_END:-15483}"
+RESOLV_CONF="${NOSPY_DNS_RESOLV_CONF:-/etc/resolv.conf}"
+RESOLV_SOURCE="${NOSPY_DNS_RESOLV_SOURCE:-$STATE_DIR/lifesgoodwithoutspying-resolv.conf}"
+RESOLV_MARKER="# lifesgoodwithoutspying dns-filter resolv.conf"
 
 SERVICE=""
 SETTINGS=""
@@ -612,6 +615,49 @@ nat_off() {
     NAT_STARTED=0
 }
 
+# ConnMan's resolv.conf lists ::1 before 127.0.0.1. With ConnMan IPv6 off, its
+# proxy on ::1 keeps forwarding to the IPv6 upstream it learned earlier, from
+# an address the interface no longer has, so those queries are never answered
+# and every lookup waits out the resolver timeout before trying 127.0.0.1.
+# There is no ip6tables on these kernels to divert ::1, so mount a resolv.conf
+# that lists only 127.0.0.1, which the divert above sends to the helper. It is
+# read-only so ConnMan cannot rewrite it in place.
+resolv_target() {
+    realpath "$RESOLV_CONF" 2>/dev/null
+}
+
+resolv_ours_active() {
+    target="$(resolv_target)" || return 1
+    grep -q " $target " /proc/mounts 2>/dev/null &&
+        grep -qF "$RESOLV_MARKER" "$target" 2>/dev/null
+}
+
+resolv_on() {
+    resolv_off
+    target="$(resolv_target)" || die "cannot resolve $RESOLV_CONF"
+    {
+        echo "$RESOLV_MARKER"
+        echo "nameserver 127.0.0.1"
+    } > "$RESOLV_SOURCE" || die "cannot write $RESOLV_SOURCE"
+    chmod 644 "$RESOLV_SOURCE" || die "cannot chmod $RESOLV_SOURCE"
+    mount --bind "$RESOLV_SOURCE" "$target" || die "cannot mount $RESOLV_SOURCE over $target"
+    if mount -o remount,bind,ro "$target"; then
+        log "resolv.conf lists only 127.0.0.1 (read-only over $target)"
+    else
+        log "resolv.conf lists only 127.0.0.1, but could not be made read-only; ConnMan may rewrite it"
+    fi
+}
+
+resolv_off() {
+    n=0
+    while resolv_ours_active && [ "$n" -lt 5 ]; do
+        target="$(resolv_target)"
+        umount "$target" 2>/dev/null || umount -l "$target" 2>/dev/null || break
+        n=$((n + 1))
+    done
+    rm -f "$RESOLV_SOURCE"
+}
+
 capture_original_connman() {
     ORIGINAL_NAMESERVERS="$(grep '^Nameservers=' "$SETTINGS" 2>/dev/null |
         tail -n 1 | cut -d= -f2- || true)"
@@ -681,6 +727,7 @@ enable_failed() {
     rc=$?
     trap - EXIT
     if [ -f "$STATE_FILE" ] && load_state; then
+        resolv_off || true
         nat_off || true
         legacy_firewall_cleanup || true
         if configure_connman_off >/dev/null 2>&1 && legacy_nameservers_restore; then
@@ -714,6 +761,9 @@ enable_handoff() {
     helper_start
     configure_connman_ipv6_on
     nat_on
+    if [ "$IPV6_MODE" = "off" ]; then
+        resolv_on
+    fi
     save_state
     trap - EXIT
     log "handoff enabled"
@@ -723,6 +773,7 @@ disable_handoff() {
     require_root
     if [ ! -f "$STATE_FILE" ]; then
         helper_stop
+        resolv_off
         nat_off
         legacy_firewall_cleanup
         log "handoff already disabled"
@@ -738,6 +789,7 @@ disable_handoff() {
         return 1
     fi
     legacy_firewall_cleanup
+    resolv_off
     nat_off
     helper_stop
     clear_state
@@ -761,6 +813,7 @@ status_handoff() {
         echo "connman_nameservers=$(grep '^Nameservers=' "$SETTINGS" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
         echo "connman_ipv6=$(grep '^IPv6.method=' "$SETTINGS" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)"
         echo "handoff_ipv6_mode=$IPV6_MODE"
+        echo "resolv_conf=$(resolv_ours_active && echo ipv4-only || echo system)"
         echo "loaded_generation=$(status_value generation 2>/dev/null || true)"
         echo "loaded_rules=$(status_value rules 2>/dev/null || true)"
         echo "loaded_declared_rules=$(status_value declared_rules 2>/dev/null || true)"

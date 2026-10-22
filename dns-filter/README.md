@@ -104,14 +104,19 @@ port-53 divert at the host level:
 
 - keeps ConnMan listening on `127.0.0.1:53` unchanged;
 - optionally disables the service's IPv6 configuration when the app's separate
-  `dns.disable_ipv6` companion switch is on;
+  `dns.disable_ipv6` companion switch is on. In that mode it also bind-mounts a
+  read-only `resolv.conf` listing only `127.0.0.1`: ConnMan's proxy on `::1`
+  keeps forwarding to the IPv6 upstream it learned before IPv6 was turned off,
+  those queries are never answered, and the system resolver would otherwise
+  wait out its 5-second timeout on `::1` before every lookup;
 - runs the filter on `127.0.0.1:5354`;
 - NATs outbound UDP and TCP port-53 queries to that helper, so ConnMan's
   resolver traffic and every other local DNS attempt is filtered;
 - the helper's own upstream sockets are exempted from the divert: its UDP
   upstream source port is pinned to 15354 and its TCP upstream source ports
   rotate across 15355:15483;
-- restores ConnMan's IPv6 setting and removes the NAT rules on disable. If
+- restores ConnMan's IPv6 setting and `resolv.conf` and removes the NAT rules
+  on disable. If
   ConnMan does not report the original value back, the handoff keeps its
   state/helper for a later retry instead of claiming a successful rollback.
 

@@ -134,7 +134,9 @@ and the main button cycles Enable / Update / Disable.
   nameserver through a local helper, and blocks LAN access to the helper
   listener. The separate `dns.disable_ipv6` companion switch controls whether
   the handoff also changes ConnMan IPv6; when it is off, IPv6 is preserved and
-  IPv6 DNS may bypass the helper. Disabling the DNS filter restores the
+  IPv6 DNS may bypass the helper. When it is on, the handoff also points
+  `resolv.conf` at `127.0.0.1` only, as ConnMan's `::1` proxy stops answering
+  once IPv6 is off. Disabling the DNS filter restores the
   original nameserver and restores IPv6 only if the handoff had changed it.
   Direct DNS, DNS-over-TLS/HTTPS, and custom resolvers remain outside its
   scope; if the helper exits, the handoff fails closed until re-applied or
