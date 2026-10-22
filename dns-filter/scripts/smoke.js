@@ -6,6 +6,8 @@ const os = require('os');
 const path = require('path');
 
 const bundle = path.join(__dirname, '..', 'dist', 'nospy-dns-filter.js');
+// NOSPY_DNS_NODE runs the bundle under another Node, such as the 0.12 on webOS 3.x.
+const runtime = process.env.NOSPY_DNS_NODE || process.execPath;
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'nospy-dns-filter-'));
 const blocklistPath = path.join(temporaryDirectory, 'blocklist.txt');
 
@@ -20,7 +22,7 @@ try {
     ].join('\n') + '\n',
   );
   const result = childProcess.spawnSync(
-    process.execPath,
+    runtime,
     [
       bundle,
       '--upstream',

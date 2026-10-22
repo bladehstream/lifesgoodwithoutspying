@@ -2,6 +2,7 @@ import * as dgram from 'dgram';
 import * as dns from 'dns';
 import * as net from 'net';
 import { Blocklist, BlocklistMetadata, loadBlocklist } from './blocklist';
+import { allocBuffer, copyBuffer } from './buffer';
 import { FilterConfig } from './config';
 import { DnsQuery, makeErrorResponse, makeNxDomainResponse, RCODE_SERVFAIL, parseDnsQuery } from './dns';
 
@@ -273,7 +274,7 @@ export class DnsFilterProxy {
       return;
     }
 
-    const forwarded = Buffer.from(message);
+    const forwarded = copyBuffer(message);
     forwarded.writeUInt16BE(upstreamId, 0);
     const pending: PendingUdp = {
       client: { address: remote.address, port: remote.port },
@@ -340,7 +341,7 @@ export class DnsFilterProxy {
 
     this.pendingUdp.delete(upstreamId);
     clearTimeout(pending.timer);
-    const response = Buffer.from(message);
+    const response = copyBuffer(message);
     response.writeUInt16BE(pending.clientId, 0);
     const udp = this.udp;
     if (udp !== null) {
@@ -391,7 +392,7 @@ export class DnsFilterProxy {
   private handleTcpConnection(socket: net.Socket): void {
     this.tcpClients.push(socket);
     const state: TcpState = {
-      buffer: Buffer.alloc(0),
+      buffer: allocBuffer(0),
       queue: [],
       busy: false,
     };
@@ -498,7 +499,7 @@ export class DnsFilterProxy {
     const maxAttempts = 3;
     let attempts = 0;
     let upstream: net.Socket | null = null;
-    let responseBuffer = Buffer.alloc(0);
+    let responseBuffer = allocBuffer(0);
     let finished = false;
     let timer: any = null;
 
@@ -527,7 +528,7 @@ export class DnsFilterProxy {
 
     const attempt = () => {
       attempts += 1;
-      responseBuffer = Buffer.alloc(0);
+      responseBuffer = allocBuffer(0);
       const options: any = {
         host: this.upstreamAddress,
         port: this.config.upstream.port,
@@ -636,7 +637,7 @@ export class DnsFilterProxy {
 }
 
 function makeTcpFrame(message: Buffer): Buffer {
-  const frame = Buffer.alloc(message.length + 2);
+  const frame = allocBuffer(message.length + 2);
   frame.writeUInt16BE(message.length, 0);
   message.copy(frame, 2);
   return frame;

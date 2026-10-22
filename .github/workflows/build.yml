@@ -35,6 +35,22 @@ jobs:
       - name: Build IPK
         run: ./build.sh
 
+      # Run the DNS filter bundle under the Node releases the TVs ship:
+      # 0.12 on webOS 3.x and 8.12 on webOS 4-6.
+      - name: DNS filter smoke tests on TV Node versions
+        run: |
+          while read -r version sha256; do
+            tarball="node-v${version}-linux-x64.tar.gz"
+            curl -fsSL -o "$RUNNER_TEMP/$tarball" "https://nodejs.org/dist/v${version}/${tarball}"
+            echo "${sha256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+            tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP"
+            echo "Node ${version}:"
+            (cd dns-filter && NOSPY_DNS_NODE="$RUNNER_TEMP/node-v${version}-linux-x64/bin/node" bun run smoke)
+          done <<'EOF'
+          0.12.18 990b3b39b6290000da1c9fdb5352c2e81fca4e6eeaecfce77c46b3cea1a68dba
+          8.12.0 3df19b748ee2b6dfe3a03448ebc6186a3a86aeab557018d77a0f7f3314594ef6
+          EOF
+
       - name: Upload IPK
         uses: actions/upload-artifact@v4
         with:

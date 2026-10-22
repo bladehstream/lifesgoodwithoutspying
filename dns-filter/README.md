@@ -23,9 +23,12 @@ bun run smoke
 ```
 
 The production bundle is written to `dist/nospy-dns-filter.js` as CommonJS.
-Vite targets ES2015 because webOS 5/6 provide Node 8.12. `bun test` exercises
-the source; `bun run smoke` also exercises the generated bundle and its
-acknowledged blocklist-reload protocol.
+The bundle is lowered to ES5 so it also runs on Node 0.12 (webOS 3.x), not
+just Node 8.12 (webOS 4-6); `src/buffer.ts` covers the Buffer APIs Node 0.12
+lacks. `bun test` exercises the source; `bun run smoke` also exercises the
+generated bundle, its acknowledged blocklist-reload protocol, and UDP/TCP
+forwarding. Set `NOSPY_DNS_NODE` to run the bundle under another Node binary,
+as CI does for 0.12.18 and 8.12.0.
 
 ## Run
 
