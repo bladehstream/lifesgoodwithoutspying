@@ -43,8 +43,11 @@ html, body {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 2vw;
 }
+
+/* Flex containers space their children with margins rather than gap: flex
+   gap needs Chromium 84, newer than the engine on webOS 4-6. */
+.masthead > * + * { margin-left: 2vw; }
 
 .masthead h1 {
   margin: 0;
@@ -53,7 +56,8 @@ html, body {
   letter-spacing: -0.3px;
 }
 
-.device { display: flex; gap: 1vw; align-items: center; }
+.device { display: flex; align-items: center; }
+.device > * + * { margin-left: 1vw; }
 
 .tag {
   font-size: 1.4vh;
@@ -95,12 +99,13 @@ html, body {
 
 .signal .bars {
   position: absolute;
-  inset: 0;
+  top: 0; right: 0; bottom: 0; left: 0;
+  /* One position per color stop: two-position stops need Chromium 71. */
   background: repeating-linear-gradient(90deg,
-    rgba(212, 85, 74, 0.60) 0 1.5vw,
-    rgba(223, 166, 60, 0.60) 1.5vw 3vw,
-    rgba(236, 230, 216, 0.34) 3vw 4.5vw,
-    rgba(77, 142, 166, 0.55) 4.5vw 6vw);
+    rgba(212, 85, 74, 0.60) 0, rgba(212, 85, 74, 0.60) 1.5vw,
+    rgba(223, 166, 60, 0.60) 1.5vw, rgba(223, 166, 60, 0.60) 3vw,
+    rgba(236, 230, 216, 0.34) 3vw, rgba(236, 230, 216, 0.34) 4.5vw,
+    rgba(77, 142, 166, 0.55) 4.5vw, rgba(77, 142, 166, 0.55) 6vw);
   transition: filter 0.45s ease;
 }
 
@@ -109,8 +114,8 @@ html, body {
 .signal::after {
   content: "";
   position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent 49.6%, var(--ink) 49.6% 50%, var(--secure) 50% 50.9%, var(--ink) 50.9% 51.3%, transparent 51.3%);
+  top: 0; right: 0; bottom: 0; left: 0;
+  background: linear-gradient(90deg, transparent 49.6%, var(--ink) 49.6%, var(--ink) 50%, var(--secure) 50%, var(--secure) 50.9%, var(--ink) 50.9%, var(--ink) 51.3%, transparent 51.3%);
   opacity: 0;
   transition: opacity 0.45s ease;
 }
@@ -184,9 +189,9 @@ html, body {
   padding-left: 2.2vw;
 }
 
-.readout > div { display: flex; flex-direction: column; gap: 0.2vh; }
+.readout > div { display: flex; flex-direction: column; }
 .readout dt { font-size: 1.4vh; color: var(--dim); }
-.readout dd { margin: 0; font-family: var(--mono); font-size: 1.9vh; font-weight: 500; }
+.readout dd { margin: 0.2vh 0 0; font-family: var(--mono); font-size: 1.9vh; font-weight: 500; }
 
 button {
   font: inherit;
@@ -221,7 +226,8 @@ button.primary:focus { box-shadow: 0 0 0 0.5vh rgba(236, 230, 216, 0.75); }
 
 button:disabled { opacity: 0.4; }
 
-.tools { display: flex; gap: 1vw; flex-wrap: wrap; }
+.tools { display: flex; flex-wrap: wrap; }
+.tools > * + * { margin-left: 1vw; }
 
 .stage { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
@@ -261,7 +267,6 @@ button:disabled { opacity: 0.4; }
 .layer {
   display: flex;
   align-items: center;
-  gap: 1.1vw;
   text-align: left;
   padding: 1vh 1.2vw;
   background: var(--panel);
@@ -273,6 +278,7 @@ button:disabled { opacity: 0.4; }
 
 .sw {
   flex: 0 0 auto;
+  margin-right: 1.1vw;
   width: 4.4vh;
   height: 2.3vh;
   border-radius: 2vh;
@@ -295,9 +301,9 @@ button:disabled { opacity: 0.4; }
 .layer.on .sw { background: rgba(124, 192, 139, 0.28); border-color: var(--secure); }
 .layer.on .sw::after { transform: translateX(2.1vh); background: var(--secure); }
 
-.layer-text { display: flex; flex-direction: column; gap: 0.2vh; }
+.layer-text { display: flex; flex-direction: column; }
 .layer-text b { font-size: 1.9vh; font-weight: 600; }
-.layer-text small { font-size: 1.4vh; color: var(--dim); line-height: 1.2; }
+.layer-text small { margin-top: 0.2vh; font-size: 1.4vh; color: var(--dim); line-height: 1.2; }
 
 .logview {
   flex: 1;
@@ -365,6 +371,64 @@ button:disabled { opacity: 0.4; }
 
 @media (max-width: 760px) {
   .layer-grid { grid-template-columns: 1fr; }
+}
+
+/* webOS 4.x ships Chromium 53, which predates CSS Grid. Rebuild the grid
+   layouts above with flexbox, absolute positioning and margins. */
+@supports not (display: grid) {
+  /* gap: 0 keeps the grid gaps from doubling the margins on any engine that
+     does support flex gap. */
+  .app { display: flex; flex-direction: column; gap: 0; }
+  .app > * { flex: 0 0 auto; }
+  .app > * + * { margin-top: 2.2vh; }
+  .app > .stage { flex: 1 1 auto; }
+
+  /* The readout fills the right column for the full height of the hero, as
+     its grid area spans every row; the left column flows beside it. The
+     widths approximate the 1.35fr / 1fr split: the readout's percentage is of
+     the hero's padding box, the margin's of its content box. */
+  .hero { display: block; position: relative; }
+  .hero > .signal,
+  .hero > .verdict,
+  .hero > .explain,
+  .hero > .primary { margin-right: calc(41.3% + 2.6vw); }
+  .hero > .signal { display: block; }
+  .hero > .verdict { margin-top: 1.4vh; }
+  .hero > .explain { margin-top: 1vh; }
+  .hero > .primary { display: block; margin-top: 1.6vh; }
+
+  .readout {
+    position: absolute;
+    top: 2.4vh;
+    right: 2.6vw;
+    bottom: 2.4vh;
+    width: 39%;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: center;
+    gap: 0;
+  }
+  .readout > div { width: calc(50% - 0.75vw); }
+  .readout > div:nth-child(odd) { margin-right: 1.5vw; }
+  .readout > div:nth-child(n+3) { margin-top: 1.2vh; }
+
+  .layer-grid { display: flex; flex-wrap: wrap; gap: 0; }
+  .layer { width: calc((100% - 2.8vw) / 3); margin-right: 1.4vw; }
+  .layer:nth-child(3n) { margin-right: 0; }
+  .layer:nth-child(n+4) { margin-top: 0.9vh; }
+}
+
+@supports not (display: grid) {
+  @media (max-width: 1200px) {
+    .layer, .layer:nth-child(3n) { width: calc((100% - 1.4vw) / 2); margin-right: 1.4vw; }
+    .layer:nth-child(2n) { margin-right: 0; }
+    .layer:nth-child(n+3) { margin-top: 0.9vh; }
+  }
+
+  @media (max-width: 760px) {
+    .layer, .layer:nth-child(3n) { width: 100%; margin-right: 0; }
+    .layer:nth-child(n+2) { margin-top: 0.9vh; }
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
