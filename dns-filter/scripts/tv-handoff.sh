@@ -23,10 +23,9 @@ SCRIPT_DIR="$(dirname "$SELF")"
 STATE_DIR="${NOSPY_DNS_STATE_DIR:-/var/lib/webosbrew}"
 BLOCKLIST="${NOSPY_DNS_BLOCKLIST:-$STATE_DIR/lifesgoodwithoutspying.dns}"
 BLOCKLIST_FORMAT="${NOSPY_DNS_BLOCKLIST_FORMAT:-domains}"
-RUNTIME_DIR="${NOSPY_DNS_RUNTIME_DIR:-/tmp/nospy-dns-filter}"
-STATUS_FILE="${NOSPY_DNS_STATUS_FILE:-$RUNTIME_DIR/status}"
+STATUS_FILE="${NOSPY_DNS_STATUS_FILE:-$STATE_DIR/lifesgoodwithoutspying-dns-filter.status}"
 PID_FILE="${NOSPY_DNS_PID_FILE:-$STATE_DIR/lifesgoodwithoutspying-dns-filter.pid}"
-LOG_FILE="${NOSPY_DNS_LOG_FILE:-$RUNTIME_DIR/log}"
+LOG_FILE="${NOSPY_DNS_LOG_FILE:-$STATE_DIR/lifesgoodwithoutspying-dns-filter.log}"
 STATE_FILE="${NOSPY_DNS_STATE_FILE:-$STATE_DIR/lifesgoodwithoutspying-dns-filter.state}"
 if [ -n "${NOSPY_DNS_BUNDLE:-}" ]; then
     BUNDLE="$NOSPY_DNS_BUNDLE"
@@ -456,7 +455,7 @@ helper_start() {
         die "a helper is running without the expected acknowledged generation"
     fi
 
-    mkdir -p "$RUNTIME_DIR" || die "cannot create runtime directory: $RUNTIME_DIR"
+    mkdir -p "$STATE_DIR" || die "cannot create state directory: $STATE_DIR"
     rm -f "$STATUS_FILE"
     : > "$LOG_FILE"
     nohup "$NODE" "$BUNDLE" \

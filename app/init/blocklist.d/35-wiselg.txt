@@ -1,0 +1,8 @@
+# LG Home "wise" service: app-session uploads. Toggle: domains.wiselg
+#
+# Off by default: the same host also serves Home recommendations, previews,
+# sports and channel-map metadata, so blocking it can break those features.
+aic.tv.wiselg.com
+eic.tv.wiselg.com
+kic.tv.wiselg.com
+ruc.tv.wiselg.com

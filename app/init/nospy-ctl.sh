@@ -21,19 +21,17 @@ DIR="$(dirname "$SELF")"
 APPLY="$DIR/nospy-apply.sh"
 REMOVE="$DIR/nospy-remove.sh"
 
+# Count each enabled domain once, as a host can sit in more than one category.
 blocklist_count() {
     domain_keys > "$TMP"
-    total=0
     while IFS= read -r key; do
         is_on "$key" || continue
         file="$(cat_file_for_key "$key")"
         [ -n "$file" ] || continue
         [ -f "$DIR/blocklist.d/$file" ] || continue
-        n="$(grep -v '^[[:space:]]*#' "$DIR/blocklist.d/$file" | grep -vc '^[[:space:]]*$')"
-        total=$((total + n))
-    done < "$TMP"
+        grep -v '^[[:space:]]*#' "$DIR/blocklist.d/$file" | grep -v '^[[:space:]]*$'
+    done < "$TMP" | awk '!seen[$0]++ { n++ } END { print n + 0 }'
     rm -f "$TMP"
-    echo "$total"
 }
 
 DNS_STATUS_CACHE=""
