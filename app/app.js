@@ -447,6 +447,12 @@
                     scroller.scrollTop += item.bottom - view.bottom;
             }
         }
+        else if (el.scrollIntoViewIfNeeded) {
+            // Chromium before 61 reads scrollIntoView's options object as true
+            // and aligns to the top; this non-standard call scrolls minimally
+            // on every Chromium build.
+            el.scrollIntoViewIfNeeded(false);
+        }
         else if (el.scrollIntoView) {
             el.scrollIntoView({ block: 'nearest' });
         }
