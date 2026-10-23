@@ -4,17 +4,10 @@
 @font-face { font-family: "IBM Plex Mono"; src: url(../fonts/plexmono-400.woff2) format('woff2'); font-weight: 400; font-display: swap; }
 @font-face { font-family: "IBM Plex Mono"; src: url(../fonts/plexmono-500.woff2) format('woff2'); font-weight: 500; font-display: swap; }
 
-:root {
-  --ink: #0F1315;
-  --panel: #191F22;
-  --line: #2C3438;
-  --paper: #ECE6D8;
-  --dim: #8FA0A6;
-  --secure: #7CC08B;
-  --pending: #DFA63C;
-  --cut: #D4554A;
-  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
-}
+/* Palette, written out as literals below because webOS 3.x's Chromium 38
+   predates CSS custom properties (Chromium 49):
+     ink #0F1315   panel #191F22   line #2C3438   paper #ECE6D8   dim #8FA0A6
+     secure #7CC08B   pending #DFA63C   cut #D4554A */
 
 * { box-sizing: border-box; }
 
@@ -23,8 +16,8 @@
 html, body {
   margin: 0;
   height: 100%;
-  background: var(--ink);
-  color: var(--paper);
+  background: #0F1315;
+  color: #ECE6D8;
   font-family: Chivo, "LG Smart UI", "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
@@ -61,19 +54,19 @@ html, body {
 
 .tag {
   font-size: 1.4vh;
-  color: var(--dim);
+  color: #8FA0A6;
   padding: 0.4vh 1vw;
-  border: 1px solid var(--line);
+  border: 1px solid #2C3438;
   border-radius: 2vh;
-  font-family: var(--mono);
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
 
-.tag.ok { color: var(--secure); border-color: rgba(124, 192, 139, 0.45); }
-.tag.bad { color: var(--cut); border-color: rgba(212, 85, 74, 0.45); }
+.tag.ok { color: #7CC08B; border-color: rgba(124, 192, 139, 0.45); }
+.tag.bad { color: #D4554A; border-color: rgba(212, 85, 74, 0.45); }
 
 .hero {
-  background: var(--panel);
-  border: 1px solid var(--line);
+  background: #191F22;
+  border: 1px solid #2C3438;
   border-radius: 10px;
   padding: 2.4vh 2.6vw;
   display: grid;
@@ -94,7 +87,7 @@ html, body {
   height: 6vh;
   border-radius: 5px;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid #2C3438;
 }
 
 .signal .bars {
@@ -106,16 +99,21 @@ html, body {
     rgba(223, 166, 60, 0.60) 1.5vw, rgba(223, 166, 60, 0.60) 3vw,
     rgba(236, 230, 216, 0.34) 3vw, rgba(236, 230, 216, 0.34) 4.5vw,
     rgba(77, 142, 166, 0.55) 4.5vw, rgba(77, 142, 166, 0.55) 6vw);
-  transition: filter 0.45s ease;
+  /* Chromium 38 (webOS 3.x) only knows the prefixed animation and filter
+     properties; the unprefixed forms arrived in Chromium 43 and 53. */
+  transition: -webkit-filter 0.45s ease, filter 0.45s ease;
 }
 
-.app.secured .signal .bars { filter: saturate(0.1) brightness(0.45); }
+.app.secured .signal .bars {
+  -webkit-filter: saturate(0.1) brightness(0.45);
+  filter: saturate(0.1) brightness(0.45);
+}
 
 .signal::after {
   content: "";
   position: absolute;
   top: 0; right: 0; bottom: 0; left: 0;
-  background: linear-gradient(90deg, transparent 49.6%, var(--ink) 49.6%, var(--ink) 50%, var(--secure) 50%, var(--secure) 50.9%, var(--ink) 50.9%, var(--ink) 51.3%, transparent 51.3%);
+  background: linear-gradient(90deg, transparent 49.6%, #0F1315 49.6%, #0F1315 50%, #7CC08B 50%, #7CC08B 50.9%, #0F1315 50.9%, #0F1315 51.3%, transparent 51.3%);
   opacity: 0;
   transition: opacity 0.45s ease;
 }
@@ -127,15 +125,26 @@ html, body {
   top: 0; bottom: 0;
   width: 7vw;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.30), transparent);
+  -webkit-animation: scan 3.4s linear infinite;
   animation: scan 3.4s linear infinite;
 }
 
+@-webkit-keyframes scan { from { left: -7vw; } to { left: 100%; } }
 @keyframes scan { from { left: -7vw; } to { left: 100%; } }
 
 .app.secured .scan {
   width: 5vw;
   background: linear-gradient(90deg, transparent, rgba(124, 192, 139, 0.5), transparent);
+  -webkit-animation: blocked 3.6s ease-in-out infinite;
   animation: blocked 3.6s ease-in-out infinite;
+}
+
+@-webkit-keyframes blocked {
+  0%   { left: -5vw; opacity: 0; }
+  12%  { opacity: 0.85; }
+  52%  { left: 45%; opacity: 0.85; }
+  58%  { left: 47%; opacity: 0; }
+  100% { left: 47%; opacity: 0; }
 }
 
 @keyframes blocked {
@@ -146,7 +155,15 @@ html, body {
   100% { left: 47%; opacity: 0; }
 }
 
-.app.secured .signal::after { animation: barrier 3.6s ease-in-out infinite; }
+.app.secured .signal::after {
+  -webkit-animation: barrier 3.6s ease-in-out infinite;
+  animation: barrier 3.6s ease-in-out infinite;
+}
+
+@-webkit-keyframes barrier {
+  0%, 52%, 100% { opacity: 1; }
+  58% { opacity: 0.4; }
+}
 
 @keyframes barrier {
   0%, 52%, 100% { opacity: 1; }
@@ -162,15 +179,15 @@ html, body {
   letter-spacing: -1px;
 }
 
-.verdict.is-secure { color: var(--secure); }
-.verdict.is-warn { color: var(--pending); }
-.verdict.is-danger { color: var(--cut); }
+.verdict.is-secure { color: #7CC08B; }
+.verdict.is-warn { color: #DFA63C; }
+.verdict.is-danger { color: #D4554A; }
 
 .explain {
   grid-area: explain;
   margin: 0;
   max-width: 46ch;
-  color: var(--dim);
+  color: #8FA0A6;
   font-size: 1.9vh;
   line-height: 1.35;
 }
@@ -185,13 +202,13 @@ html, body {
   grid-template-columns: 1fr 1fr;
   gap: 1.2vh 1.5vw;
   align-content: center;
-  border-left: 1px solid var(--line);
+  border-left: 1px solid #2C3438;
   padding-left: 2.2vw;
 }
 
 .readout > div { display: flex; flex-direction: column; }
-.readout dt { font-size: 1.4vh; color: var(--dim); }
-.readout dd { margin: 0.2vh 0 0; font-family: var(--mono); font-size: 1.9vh; font-weight: 500; }
+.readout dt { font-size: 1.4vh; color: #8FA0A6; }
+.readout dd { margin: 0.2vh 0 0; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 1.9vh; font-weight: 500; }
 
 button {
   font: inherit;
@@ -199,9 +216,9 @@ button {
   font-weight: 600;
   padding: 1vh 1.6vw;
   border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--paper);
+  border: 1px solid #2C3438;
+  background: #191F22;
+  color: #ECE6D8;
   cursor: pointer;
 }
 
@@ -209,16 +226,16 @@ button.primary {
   font-size: 2.1vh;
   padding: 1.4vh 2.2vw;
   border: none;
-  background: var(--paper);
-  color: var(--ink);
+  background: #ECE6D8;
+  color: #0F1315;
 }
 
-button.primary.pending { background: var(--pending); color: #1a1200; }
-button.primary.danger { background: var(--cut); color: #190705; }
+button.primary.pending { background: #DFA63C; color: #1a1200; }
+button.primary.danger { background: #D4554A; color: #190705; }
 
 button:focus {
   outline: none;
-  border-color: var(--paper);
+  border-color: #ECE6D8;
   box-shadow: 0 0 0 0.5vh rgba(236, 230, 216, 0.55);
 }
 
@@ -253,7 +270,7 @@ button:disabled { opacity: 0.4; }
   margin: 0 0 1vh;
   font-size: 1.7vh;
   font-weight: 600;
-  color: var(--dim);
+  color: #8FA0A6;
 }
 
 .layer-grid {
@@ -269,8 +286,8 @@ button:disabled { opacity: 0.4; }
   align-items: center;
   text-align: left;
   padding: 1vh 1.2vw;
-  background: var(--panel);
-  border: 1px solid var(--line);
+  background: #191F22;
+  border: 1px solid #2C3438;
   border-radius: 6px;
 }
 
@@ -283,7 +300,7 @@ button:disabled { opacity: 0.4; }
   height: 2.3vh;
   border-radius: 2vh;
   background: #10181a;
-  border: 1px solid var(--line);
+  border: 1px solid #2C3438;
   position: relative;
   transition: background 0.16s ease, border-color 0.16s ease;
 }
@@ -294,16 +311,16 @@ button:disabled { opacity: 0.4; }
   top: 0.24vh; left: 0.3vh;
   width: 1.6vh; height: 1.6vh;
   border-radius: 50%;
-  background: var(--dim);
+  background: #8FA0A6;
   transition: transform 0.16s ease, background 0.16s ease;
 }
 
-.layer.on .sw { background: rgba(124, 192, 139, 0.28); border-color: var(--secure); }
-.layer.on .sw::after { transform: translateX(2.1vh); background: var(--secure); }
+.layer.on .sw { background: rgba(124, 192, 139, 0.28); border-color: #7CC08B; }
+.layer.on .sw::after { transform: translateX(2.1vh); background: #7CC08B; }
 
 .layer-text { display: flex; flex-direction: column; }
 .layer-text b { font-size: 1.9vh; font-weight: 600; }
-.layer-text small { margin-top: 0.2vh; font-size: 1.4vh; color: var(--dim); line-height: 1.2; }
+.layer-text small { margin-top: 0.2vh; font-size: 1.4vh; color: #8FA0A6; line-height: 1.2; }
 
 .logview {
   flex: 1;
@@ -319,14 +336,14 @@ button:disabled { opacity: 0.4; }
   margin: 0 0 1vh;
   font-size: 1.7vh;
   font-weight: 600;
-  color: var(--dim);
+  color: #8FA0A6;
 }
 
 .console {
   flex: 1;
   min-height: 0;
   background: #0A0D0F;
-  border: 1px solid var(--line);
+  border: 1px solid #2C3438;
   border-radius: 6px;
   padding: 1.2vh 1.2vw;
   overflow-y: auto;
@@ -348,17 +365,17 @@ button:disabled { opacity: 0.4; }
 }
 
 .console::-webkit-scrollbar-thumb:hover,
-.console::-webkit-scrollbar-thumb:focus { background: var(--dim); }
+.console::-webkit-scrollbar-thumb:focus { background: #8FA0A6; }
 
 .console:focus {
   outline: none;
-  border-color: var(--paper);
+  border-color: #ECE6D8;
   box-shadow: 0 0 0 0.5vh rgba(236, 230, 216, 0.55);
 }
 
 #out {
   margin: 0;
-  font-family: var(--mono);
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   font-size: 1.5vh;
   line-height: 1.45;
   white-space: pre-wrap;
@@ -433,5 +450,5 @@ button:disabled { opacity: 0.4; }
 
 @media (prefers-reduced-motion: reduce) {
   .scan { display: none; }
-  .app.secured .signal::after { animation: none; }
+  .app.secured .signal::after { -webkit-animation: none; animation: none; }
 }
