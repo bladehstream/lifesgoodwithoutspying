@@ -53,9 +53,9 @@ collect_domains() {
     domain_keys > "$KEYS_TMP"
     while IFS= read -r key; do
         if [ "$key" = domains.sdp ] && [ "$mode" = initial ]; then
-            # Enabled SDP is held back for the grace period; disabled SDP is
-            # included immediately with the other categories.
-            is_on "$key" && continue
+            # Enabled SDP is held back for the grace period; disabled SDP
+            # must not contribute domains to the initial sink either.
+            continue
         else
             is_on "$key" || continue
         fi

@@ -32,6 +32,9 @@ jobs:
           for f in app/init/*.sh; do sh -n "$f"; done
           sh -n dns-filter/scripts/tv-handoff.sh
 
+      - name: Domain selection regression tests
+        run: python3 -m unittest discover -s tests -v
+
       - name: Build IPK
         run: ./build.sh
 
