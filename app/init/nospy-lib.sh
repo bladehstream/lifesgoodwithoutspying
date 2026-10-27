@@ -1,4 +1,6 @@
 #!/bin/sh
+# Keep native child tools independent of Homebrew's injected preload.
+unset LD_PRELOAD
 # lifesgoodwithoutspying shared helpers
 
 CONF="/var/lib/webosbrew/lifesgoodwithoutspying.conf"
@@ -25,7 +27,7 @@ conf_default() {
         voice.stop)         echo on ;;
         ads.stop)           echo on ;;
         lan.block)          echo off ;;
-        purge.boot)         echo on ;;
+        purge.boot)         echo off ;;
         *)                  echo off ;;
     esac
 }
@@ -34,7 +36,7 @@ conf_default() {
 conf_get() {
     key="$1"
     if [ -f "$CONF" ]; then
-        v="$(grep "^$key=" "$CONF" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
+        v="$(awk -F= -v k="$key" '$1 == k {print substr($0,length(k)+2)}' "$CONF" 2>/dev/null | tail -n 1)"
         if [ -n "$v" ]; then
             echo "$v"
             return 0
@@ -54,11 +56,11 @@ conf_set() {
     val="$2"
     mkdir -p "$(dirname "$CONF")"
     if [ -f "$CONF" ]; then
-        grep -v "^$key=" "$CONF" > "$CONF.tmp" 2>/dev/null || : > "$CONF.tmp"
+        awk -F= -v k="$key" '$1 != k' "$CONF" > "$CONF.tmp" 2>/dev/null || return 1
     else
-        : > "$CONF.tmp"
+        : > "$CONF.tmp" || return 1
     fi
-    echo "$key=$val" >> "$CONF.tmp"
+    echo "$key=$val" >> "$CONF.tmp" || return 1
     mv "$CONF.tmp" "$CONF"
 }
 
@@ -124,6 +126,29 @@ pending_hosts_cancel() {
     rm -f "$HOSTS_PENDING"
 }
 
+# Return 2 when superseded/cancelled, 1 on sustained contention, 0 with lock held.
+pending_hosts_lock() {
+    pending_lock_token="$1"
+    pending_lock_wait=0
+    while pending_hosts_current "$pending_lock_token"; do
+        if lock_acquire 2>/dev/null; then
+            if pending_hosts_current "$pending_lock_token"; then return 0; fi
+            lock_release
+            return 2
+        fi
+        if [ "$pending_lock_wait" -ge 20 ]; then
+            echo "[-] SDP update could not acquire the operation lock after 20 seconds"
+            return 1
+        fi
+        if [ "$pending_lock_wait" = 0 ]; then
+            echo "[~] SDP update waiting for the current protection operation"
+        fi
+        sleep 1
+        pending_lock_wait=$((pending_lock_wait + 1))
+    done
+    return 2
+}
+
 hosts_pending() {
     [ -f "$HOSTS_PENDING" ] || return 1
     read -r pending_pid pending_token < "$HOSTS_PENDING"
@@ -133,13 +158,16 @@ hosts_pending() {
 
 # Exit 0 only if OUR generated file is the mount currently on top of /etc/hosts.
 hosts_ours_active() {
-    grep -qF "$NOSPY_MARKER" /etc/hosts 2>/dev/null
+    hosts_is_mounted && [ /etc/hosts -ef "$HOSTS_GEN" ] &&
+        grep -qF "$NOSPY_MARKER" /etc/hosts 2>/dev/null
 }
 
 # Print the state of /etc/hosts: waiting | ours | external | open.
 hosts_state() {
     if hosts_pending; then
         echo "waiting"
+    elif [ -f "$HOSTS_PENDING" ]; then
+        echo "failed"
     elif ! hosts_is_mounted; then
         echo "open"
     elif hosts_ours_active; then
@@ -151,31 +179,36 @@ hosts_state() {
 
 # BusyBox's timeout takes the duration as a bare SECS argument in 1.35 (webOS 9)
 # but only as "-t SECS" in 1.29 (webOS 5/6), and each rejects the other's form
-# outright. The wrong form exits 127 without ever running the command, so ask
-# this build which one it accepts instead of assuming. Probed once per process.
+# outright. Read usage without executing a probe command; cache per process.
 TIMEOUT_STYLE=""
 
 detect_timeout_style() {
     [ -n "$TIMEOUT_STYLE" ] && return 0
     if ! command -v timeout >/dev/null 2>&1; then
         TIMEOUT_STYLE=none
-    elif timeout 1 sh -c : >/dev/null 2>&1; then
-        TIMEOUT_STYLE=bare
-    elif timeout -t 1 sh -c : >/dev/null 2>&1; then
-        TIMEOUT_STYLE=flag
     else
-        TIMEOUT_STYLE=none
+        # Never execute a syntax probe. On older LG BusyBox, invoking timeout
+        # with a bare command name can recurse/hang under Homebrew exec.
+        timeout_help="$(timeout --help 2>&1)"
+        case "$timeout_help" in
+            *'[-t SECS]'*) TIMEOUT_STYLE=flag ;;
+            *' SECS PROG '*|*' DURATION COMMAND'*) TIMEOUT_STYLE=bare ;;
+            *) TIMEOUT_STYLE=none ;;
+        esac
     fi
     return 0
 }
 
 # Run a command with a timeout when one is usable to avoid a hang blocking boot
 bounded() {
+    # This TV's BusyBox timeout cannot resolve sbin commands by bare name.
+    bounded_command="$(command -v "$1")" || return 127
+    shift
     detect_timeout_style
     case "$TIMEOUT_STYLE" in
-        bare) timeout 10 "$@" ;;
-        flag) timeout -t 10 "$@" ;;
-        *) "$@" ;;
+        bare) timeout -s KILL 10 "$bounded_command" "$@" ;;
+        flag) timeout -t 10 -s KILL "$bounded_command" "$@" ;;
+        *) echo "[-] no usable timeout; refusing an unbounded command: $bounded_command" >&2; return 125 ;;
     esac
 }
 
@@ -194,6 +227,14 @@ bounded() {
 target_paths() {
     printf '%s\n' "/usr/sbin/$1" "/usr/bin/$1"
     printf '%s\n' /var/palm/jail/*/usr/sbin/"$1" /var/palm/jail/*/usr/bin/"$1"
+}
+
+# Resolve symlink aliases once so mount records and /proc paths agree.
+existing_targets() {
+    while IFS= read -r candidate; do
+        [ -f "$candidate" ] || continue
+        readlink -f "$candidate" 2>/dev/null || return 1
+    done | sort -u
 }
 
 # Ad / ACR / telemetry executables.
@@ -254,7 +295,8 @@ STUB_STATE="/var/lib/webosbrew/lifesgoodwithoutspying.stubbed"
 # Write the stub body once.
 stub_write() {
     mkdir -p /var/lib/webosbrew 2>/dev/null || true
-    printf '#!/bin/sh\nexit 0\n' > "$STUB_FILE"
+    [ -f "$STUB_FILE" ] && return 0
+    printf '#!/bin/sh\n# nospy executable stub v2\nexit 0\n' > "$STUB_FILE"
     chmod 755 "$STUB_FILE"
 }
 
@@ -263,40 +305,52 @@ stub_mount() {
     key="$1"
     path="$2"
     [ -f "$path" ] || return 1
+    # Refuse unrelated mounts. Persist intent before changing the mount table.
+    if awk -v p="$path" '$2 == p {found=1} END {exit !found}' /proc/mounts; then return 1; fi
+    grep -qxF "$key $path" "$STUB_STATE" 2>/dev/null ||
+        { echo "$key $path" >> "$STUB_STATE" || return 1; }
     mount --bind "$STUB_FILE" "$path" 2>/dev/null || return 1
-    echo "$key $path" >> "$STUB_STATE"
     return 0
 }
 
 # Unmount everything stubbed for one category.
-stub_clear_key() {
-    key="$1"
-    [ -f "$STUB_STATE" ] || return 0
-    awk -v k="$key" '$1 == k { print $2 }' "$STUB_STATE" |
-        while IFS= read -r path; do
-            [ -n "$path" ] || continue
-            umount "$path" 2>/dev/null || umount -l "$path" 2>/dev/null
-        done
-    awk -v k="$key" '$1 != k' "$STUB_STATE" > "$STUB_STATE.tmp" 2>/dev/null ||
-        : > "$STUB_STATE.tmp"
-    mv "$STUB_STATE.tmp" "$STUB_STATE"
+stub_owned() {
+    # Both the mount and the distinctive bytes must match before removal.
+    awk -v p="$1" '$2 == p {found=1} END {exit !found}' /proc/mounts &&
+        [ "$STUB_FILE" -ef "$1" ] && cmp -s "$STUB_FILE" "$1"
 }
 
-# Unmount every stub we own.
-stub_clear_all() {
+stub_clear_key() {
+    clear_key="$1"
     [ -f "$STUB_STATE" ] || return 0
-    awk '{ print $2 }' "$STUB_STATE" |
-        while IFS= read -r path; do
-            [ -n "$path" ] || continue
-            umount "$path" 2>/dev/null || umount -l "$path" 2>/dev/null
-        done
-    rm -f "$STUB_STATE"
+    clear_ok=0
+    : > "$STUB_STATE.tmp" || return 1
+    while read -r category target; do
+        if [ "$clear_key" != all ] && [ "$category" != "$clear_key" ]; then
+            printf '%s %s\n' "$category" "$target" >> "$STUB_STATE.tmp"
+            continue
+        fi
+        if stub_owned "$target"; then
+            if ! umount "$target" 2>/dev/null; then
+                printf '%s %s\n' "$category" "$target" >> "$STUB_STATE.tmp"
+                clear_ok=1
+            fi
+        elif awk -v p="$target" '$2 == p {found=1} END {exit !found}' /proc/mounts; then
+            echo "[-] foreign mount over recorded stub: $target" >&2
+            printf '%s %s\n' "$category" "$target" >> "$STUB_STATE.tmp"
+            clear_ok=1
+        fi
+    done < "$STUB_STATE"
+    mv "$STUB_STATE.tmp" "$STUB_STATE" || return 1
+    return "$clear_ok"
 }
+
+stub_clear_all() { stub_clear_key all; }
 
 # How many executables we currently have stubbed.
 stub_count() {
     if [ -f "$STUB_STATE" ]; then
-        grep -c . "$STUB_STATE" 2>/dev/null || echo 0
+        awk 'NF {n++} END {print n+0}' "$STUB_STATE"
     else
         echo 0
     fi
@@ -360,23 +414,10 @@ count_running_paths() {
 # excluded by name: they live in /tmp and match "voice", so without this a
 # concurrent apply would delete the list a running status call is reading.
 purge_residue() {
-    total=0
-    for base in /var/log /tmp /var/run; do
-        [ -d "$base" ] || continue
-        n="$(find "$base" -maxdepth 3 -type f ! -name 'lifesgoodwithoutspying*' \
-            \( -iname '*acr*' -o -iname '*voice*' -o -iname '*alphonso*' -o -iname '*stt*' \) \
-            2>/dev/null | wc -l)"
-        [ "$n" -gt 0 ] || continue
-        find "$base" -maxdepth 3 -type f ! -name 'lifesgoodwithoutspying*' \
-            \( -iname '*acr*' -o -iname '*voice*' -o -iname '*alphonso*' -o -iname '*stt*' \) \
-            -exec rm -f {} + 2>/dev/null
-        total=$((total + n))
-    done
-    if [ "$total" -gt 0 ]; then
-        echo "[+] purged $total ACR/voice residue file(s)"
-    else
-        echo "[~] no ACR/voice residue found"
-    fi
+    # Firmware-specific cache paths have not been established on the target TVs.
+    # Broad filename matches in /tmp and /var/run can delete unrelated state.
+    echo "[-] Purge unavailable: no verified cache-path allowlist for this firmware"
+    return 1
 }
 
 # Print the process id of a running app, or nothing. luna-send only emits
@@ -424,23 +465,97 @@ app_close() {
 # ---------------------------------------------------------------------------
 
 # Start every unit we may have stopped. Safe when already running.
-units_restore() {
-    command -v systemctl >/dev/null 2>&1 || return 0
-    { ads_units; voice_units; thinq_units; } | sort -u |
-        while IFS= read -r unit; do
-            [ -n "$unit" ] || continue
-            systemctl --no-block start "$unit" >/dev/null 2>&1
-        done
-    return 0
-}
+SERVICE_STATE=/var/lib/webosbrew/lifesgoodwithoutspying.services
 
-# Restart the SSDP discovery daemon that apply_lan stops.
-ssdp_restore() {
-    command -v systemctl >/dev/null 2>&1 || return 0
-    if systemctl --no-block start ssdp-discovery-lgtv >/dev/null 2>&1; then
-        echo "[+] restarted ssdp-discovery-lgtv"
+service_backend() {
+    if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+        echo systemd
+    elif command -v initctl >/dev/null 2>&1; then
+        echo upstart
     fi
 }
+
+service_stop() {
+    service_key="$1"; service_unit="$2"; backend="$(service_backend)"
+    case "$backend" in
+        systemd)
+            systemctl is-active --quiet "$service_unit" || return 0
+            ;;
+        upstart)
+            service_unit="${service_unit%.service}"
+            bounded initctl status "$service_unit" 2>/dev/null | grep -q 'start/running' || return 0
+            ;;
+        *) return 0 ;;
+    esac
+    mkdir -p /var/lib/webosbrew || return 1
+    record="$service_key $backend $service_unit"
+    grep -qxF "$record" "$SERVICE_STATE" 2>/dev/null ||
+        { echo "$record" >> "$SERVICE_STATE" || return 1; }
+    case "$backend" in
+        # Some LG daemons ignore TERM. Queue the stop, then let the category's
+        # exact executable cleanup run before checking that the unit stopped.
+        systemd) bounded systemctl --no-block stop "$service_unit" ;;
+        upstart) bounded initctl stop "$service_unit" ;;
+    esac
+}
+
+units_verify_stopped() {
+    verify_key="$1"
+    [ -f "$SERVICE_STATE" ] || return 0
+    verify_rc=0
+    while read -r category backend unit; do
+        [ "$category" = "$verify_key" ] || continue
+        attempts=0
+        stopped=0
+        while [ "$attempts" -lt 10 ]; do
+            case "$backend" in
+                systemd)
+                    state="$(bounded systemctl show "$unit" -p ActiveState --value)" || state=unknown
+                    case "$state" in inactive|failed) stopped=1 ;; esac
+                    ;;
+                upstart)
+                    bounded initctl status "$unit" 2>/dev/null | grep -q 'stop/waiting' && stopped=1
+                    ;;
+            esac
+            [ "$stopped" = 1 ] && break
+            attempts=$((attempts + 1))
+            sleep 1
+        done
+        if [ "$stopped" != 1 ]; then
+            echo "[-] $unit did not stop; recovery record retained"
+            verify_rc=1
+        fi
+    done < "$SERVICE_STATE"
+    return "$verify_rc"
+}
+
+units_restore() {
+    restore_key="${1:-all}"
+    [ -f "$SERVICE_STATE" ] || return 0
+    restore_rc=0
+    : > "$SERVICE_STATE.tmp" || return 1
+    while read -r category backend unit; do
+        if [ "$restore_key" != all ] && [ "$category" != "$restore_key" ]; then
+            echo "$category $backend $unit" >> "$SERVICE_STATE.tmp"
+            continue
+        fi
+        restored=1
+        case "$backend" in
+            systemd) bounded systemctl start "$unit" || restored=0 ;;
+            upstart) bounded initctl start "$unit" ||
+                { bounded initctl status "$unit" | grep -q 'start/running' || restored=0; } ;;
+            *) restored=0 ;;
+        esac
+        if [ "$restored" = 0 ]; then
+            echo "$category $backend $unit" >> "$SERVICE_STATE.tmp"
+            restore_rc=1
+        fi
+    done < "$SERVICE_STATE"
+    mv "$SERVICE_STATE.tmp" "$SERVICE_STATE" || return 1
+    return "$restore_rc"
+}
+
+ssdp_restore() { units_restore lan.block; }
 
 # True if the real upnpd daemon is running (as opposed to our stub shell).
 # Candidates are matched by comm, which is the basename of the executed file:
@@ -470,9 +585,13 @@ kill_with_children() {
 # healthy real upnpd alive.
 #
 # Returns 0 if it unstubbed something, 1 if there was nothing to do.
+upnp_stub_active() {
+    head -n 2 /usr/sbin/upnpd 2>/dev/null | grep -q 'nospy-upnpd-stub'
+}
+
 upnp_unstub() {
     changed=0
-    if head -n 2 /usr/sbin/upnpd 2>/dev/null | grep -q 'nospy-upnpd-stub'; then
+    if upnp_stub_active; then
         if umount /usr/sbin/upnpd 2>/dev/null || umount -l /usr/sbin/upnpd 2>/dev/null; then
             echo "[+] restored /usr/sbin/upnpd"
             changed=1
@@ -520,9 +639,123 @@ upnp_restore() {
 # Put back everything the toggles may have stopped: unstub the executables
 # first, then let the units come back up.
 services_restore() {
-    stub_clear_all
-    upnp_unstub
-    units_restore
-    ssdp_restore
-    upnp_restore
+    stub_clear_all || return 1
+    upnp_changed=0
+    upnp_unstub && upnp_changed=1
+    upnp_stub_active && return 1
+    units_restore || return 1
+    [ "$upnp_changed" = 0 ] || upnp_restore
+    return 0
+}
+
+# A volatile generation prevents an old worker acting after restore/reapply.
+WATCH_STATE=/tmp/lifesgoodwithoutspying.watch
+WATCH_ERROR=/tmp/lifesgoodwithoutspying.watch-error
+watch_current() {
+    [ -f "$WATCH_STATE" ] || return 1
+    read -r watch_pid watch_token < "$WATCH_STATE"
+    [ "$watch_token" = "$1" ]
+}
+watch_pid_owned() {
+    case "$1" in ''|*[!0-9]*|0|1) return 1 ;; esac
+    [ -r "/proc/$1/cmdline" ] || return 1
+    tr '\000' '\n' < "/proc/$1/cmdline" | grep -qxF "$DIR/nospy-watch.sh" &&
+        tr '\000' '\n' < "/proc/$1/cmdline" | grep -qxF "$2"
+}
+watch_stop() {
+    if [ -f "$WATCH_STATE" ]; then
+        read -r old_watch_pid old_watch_token < "$WATCH_STATE"
+        # Invalidate before signalling. A worker acquiring the lock must recheck.
+        rm -f "$WATCH_STATE" || return 1
+        if watch_pid_owned "$old_watch_pid" "$old_watch_token"; then
+            kill "$old_watch_pid" 2>/dev/null || true
+        fi
+    fi
+    rm -f "$WATCH_ERROR"
+}
+watch_needed() {
+    is_on ads.stop || is_on voice.stop || is_on domains.thinq
+}
+watch_start() {
+    watch_stop || return 1
+    watch_needed || return 0
+    watch_nonce="$(mktemp -d /tmp/lifesgoodwithoutspying.token.XXXXXX)" || return 1
+    new_watch_token="${watch_nonce##*/}"
+    rmdir "$watch_nonce" || return 1
+    printf '0 %s\n' "$new_watch_token" > "$WATCH_STATE" || return 1
+    (
+        trap '' HUP
+        unset NOSPY_LOCK_OWNER
+        exec sh "$DIR/nospy-watch.sh" "$new_watch_token"
+    ) >> /var/lib/webosbrew/lifesgoodwithoutspying.log 2>&1 </dev/null &
+    new_watch_pid=$!
+    printf '%s %s\n' "$new_watch_pid" "$new_watch_token" > "$WATCH_STATE.tmp" &&
+        mv "$WATCH_STATE.tmp" "$WATCH_STATE" || return 1
+    kill -0 "$new_watch_pid" 2>/dev/null
+}
+watch_status() {
+    if [ -f "$WATCH_ERROR" ]; then echo failed; return; fi
+    if [ -f "$WATCH_STATE" ]; then
+        read -r status_watch_pid status_watch_token < "$WATCH_STATE"
+        if watch_pid_owned "$status_watch_pid" "$status_watch_token"; then
+            echo running; return
+        fi
+    fi
+    echo inactive
+}
+
+# Reconcile only explicitly selected, known executable paths. Never reconfigure
+# DNS, stop extra services or invoke a complete apply from a background worker.
+reconcile_targets() {
+    reconcile_work="$1"
+    reconcile_rc=0
+    for reconcile_key in ads.stop voice.stop domains.thinq; do
+        is_on "$reconcile_key" || continue
+        case "$reconcile_key" in
+            ads.stop) ads_execs ;; voice.stop) voice_execs ;; *) thinq_execs ;;
+        esac | existing_targets > "$reconcile_work/targets" || return 1
+        : > "$reconcile_work/added" || return 1
+        while IFS= read -r reconcile_path; do
+            # App jails can disappear while the list is being inspected.
+            [ -f "$reconcile_path" ] || continue
+            stub_owned "$reconcile_path" && continue
+            if stub_mount "$reconcile_key" "$reconcile_path"; then
+                printf '%s\n' "$reconcile_path" >> "$reconcile_work/added"
+                echo "[+] late target blocked: $reconcile_path"
+            else
+                [ -f "$reconcile_path" ] || continue
+                echo "[-] late target could not be blocked: $reconcile_path"
+                reconcile_rc=1
+            fi
+        done < "$reconcile_work/targets"
+        if [ -s "$reconcile_work/added" ]; then
+            kill_by_paths "$reconcile_work/added"
+            [ "$(count_running_paths "$reconcile_work/added")" = 0 ] || reconcile_rc=1
+        fi
+    done
+    return "$reconcile_rc"
+}
+
+# Serialize UI, boot and direct shell mutations. Nested helpers inherit owner.
+LOCK_DIR=/tmp/lifesgoodwithoutspying.lock
+lock_acquire() {
+    if [ -n "${NOSPY_LOCK_OWNER:-}" ] &&
+       [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$NOSPY_LOCK_OWNER" ]; then return 0; fi
+    mkdir -p /var/lib/webosbrew || return 1
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        echo "[-] another operation owns $LOCK_DIR; if interrupted, reboot before retrying" >&2
+        return 1
+    fi
+    NOSPY_LOCK_OWNER=$$
+    export NOSPY_LOCK_OWNER
+    echo "$$" > "$LOCK_DIR/pid"
+    LOCK_HELD=1
+}
+lock_release() {
+    if [ "${LOCK_HELD:-0}" = 1 ] &&
+       [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "${NOSPY_LOCK_OWNER:-}" ]; then
+        rm -f "$LOCK_DIR/pid"
+        rmdir "$LOCK_DIR"
+    fi
+    LOCK_HELD=0
 }

@@ -1,13 +1,18 @@
 #!/bin/sh
+# Keep native child tools independent of Homebrew's injected preload.
+unset LD_PRELOAD
 # lifesgoodwithoutspying - remove runtime changes
 
-DIR="$(dirname "$(realpath "$0")")"
+DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")"
 . "$DIR/nospy-lib.sh"
+lock_acquire || exit 1
+trap lock_release EXIT
 
 LOG="/var/lib/webosbrew/lifesgoodwithoutspying.log"
 mkdir -p /var/lib/webosbrew 2>/dev/null || true
 exec >>"$LOG" 2>&1
 echo "==== remove $(date) ===="
+watch_stop || exit 1
 
 # A delayed worker must not modify the sink after protection is disabled.
 pending_hosts_cancel
@@ -31,6 +36,7 @@ if hosts_ours_active; then
         echo "[+] /etc/hosts sink removed"
     else
         echo "[-] failed to unmount /etc/hosts (will clear on reboot)"
+        remove_ok=0
     fi
 elif hosts_is_mounted; then
     echo "[~] /etc/hosts is mounted by something else; leaving it alone"
@@ -41,11 +47,12 @@ fi
 # apply stubs executables and stops services; disabling protection should
 # unmount the stubs (including the untracked upnpd one) and turn the services
 # back on, or they stay down until the next reboot.
-services_restore
+services_restore || remove_ok=0
 
 if [ "$remove_ok" -ne 1 ]; then
     echo "[-] one or more DNS handoff rollback operations failed"
     exit 1
 fi
 
+rm -f /var/lib/webosbrew/lifesgoodwithoutspying.result
 echo "==== done ===="

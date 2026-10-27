@@ -1,39 +1,44 @@
 #!/bin/sh
+# Keep native child tools independent of Homebrew's injected preload.
+unset LD_PRELOAD
 # lifesgoodwithoutspying - apply privacy hardening according to the configured options.
 #
 # Runs at boot via run-parts and on demand from the app UI.
 
-DIR="$(dirname "$(realpath "$0")")"
+DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")"
 . "$DIR/nospy-lib.sh"
+lock_acquire || exit 1
+trap lock_release EXIT
 
 LOG="/var/lib/webosbrew/lifesgoodwithoutspying.log"
 
 # Homebrew Channel captures nothing from init.d scripts, so log ourselves.
 mkdir -p /var/lib/webosbrew 2>/dev/null || true
+watch_stop || exit 1
+pending_hosts_cancel
 
-# Log trimming
-if [ -f "$LOG" ]; then
-    size="$(wc -c < "$LOG" 2>/dev/null | tr -d '[:space:]')"
-    if [ -n "$size" ] && [ "$size" -gt 65536 ]; then
-        tail -n 200 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
-    fi
-fi
+# Keep the last run separately; the UI log always starts with this apply.
+if [ -f "$LOG" ]; then mv "$LOG" "$LOG.previous" || exit 1; fi
 
 exec >>"$LOG" 2>&1
+echo "Current protection run; previous run is saved separately."
+echo "Build: $(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$DIR/../appinfo.json")"
 echo "==== apply $(date) ===="
+echo applying > /var/lib/webosbrew/lifesgoodwithoutspying.result
 
 BLOCKDIR="$DIR/blocklist.d"
 DNS_FILTER_INIT="$DIR/nospy-dns-filter.sh"
 DNS_FILTER_STATE="/var/lib/webosbrew/lifesgoodwithoutspying-dns-filter.state"
-DOMAINS_TMP="/tmp/lifesgoodwithoutspying.domains.$$"
-KEYS_TMP="/tmp/lifesgoodwithoutspying.keys.$$"
-UNITS_TMP="/tmp/lifesgoodwithoutspying.units.$$"
-EXECS_TMP="/tmp/lifesgoodwithoutspying.execs.$$"
-APPS_TMP="/tmp/lifesgoodwithoutspying.apps.$$"
+WORK="$(mktemp -d /tmp/lifesgoodwithoutspying.apply.XXXXXX)" || exit 1
+DOMAINS_TMP="$WORK/domains"
+KEYS_TMP="$WORK/keys"
+UNITS_TMP="$WORK/units"
+EXECS_TMP="$WORK/execs"
+APPS_TMP="$WORK/apps"
 
 # Scratch files are per-run and multi-megabyte-free, but never cleaned before;
 # remove them however we exit.
-trap 'rm -f "$DOMAINS_TMP" "$KEYS_TMP" "$UNITS_TMP" "$EXECS_TMP" "$APPS_TMP" "$DNS_BLOCKLIST.tmp.$$" "$DNS_BLOCKLIST.sdp.$$"' EXIT
+trap 'lock_release; rm -f "$DOMAINS_TMP" "$KEYS_TMP" "$UNITS_TMP" "$EXECS_TMP" "$APPS_TMP" "$DNS_BLOCKLIST.tmp.$$" "$DNS_BLOCKLIST.sdp.$$"; rmdir "$WORK"' EXIT
 
 # Remove only our mounts from /etc/hosts
 # webosbrew (and potentially other apps) may have mounts on this
@@ -52,12 +57,9 @@ collect_domains() {
     mode="$1"
     domain_keys > "$KEYS_TMP"
     while IFS= read -r key; do
+        is_on "$key" || continue
         if [ "$key" = domains.sdp ] && [ "$mode" = initial ]; then
-            # Enabled SDP is held back for the grace period; disabled SDP is
-            # included immediately with the other categories.
-            is_on "$key" && continue
-        else
-            is_on "$key" || continue
+            continue
         fi
         file="$(cat_file_for_key "$key")"
         [ -n "$file" ] || continue
@@ -136,12 +138,22 @@ append_sdp_domains() {
             echo "0.0.0.0 $domain"
             echo ":: $domain"
         done
-    } >> "$HOSTS_GEN"
+    } >> "$HOSTS_GEN" || return 1
     echo "$count"
 }
 
 hosts_generation_active() {
     grep -qF "$NOSPY_MARKER generation $1" /etc/hosts 2>/dev/null
+}
+
+reload_sdp_dns() {
+    is_on dns.filter || return 0
+    if [ ! -f "$DNS_FILTER_STATE" ]; then
+        echo "[~] DNS setup is inactive; SDP rules saved for the next apply"
+        return 0
+    fi
+    [ -x "$DNS_FILTER_INIT" ] || return 1
+    "$DNS_FILTER_INIT" reload
 }
 
 # Add SDP to the already-mounted sink after LG has had time to consume
@@ -161,6 +173,18 @@ schedule_sdp_block() {
             waited=$((waited + 1))
         done
         pending_hosts_current "$token" || exit 0
+        unset NOSPY_LOCK_OWNER
+        LOCK_HELD=0
+        pending_lock_rc=0
+        pending_hosts_lock "$token" || pending_lock_rc=$?
+        [ "$pending_lock_rc" != 2 ] || exit 0
+        if [ "$pending_lock_rc" != 0 ]; then
+            # Without the lock, never mutate shared state. Leave this worker's
+            # dead pending record visible; status reports the unfinished update.
+            exit 1
+        fi
+        trap lock_release EXIT
+        pending_hosts_current "$token" || exit 0
         if ! is_on domains.sdp; then
             pending_hosts_clear "$token"
             exit 0
@@ -169,20 +193,23 @@ schedule_sdp_block() {
             pending_hosts_clear "$token"
             exit 0
         fi
+        sdp_ok=1
         if ! hosts_ours_active; then
+            sdp_ok=0
             echo "[-] our /etc/hosts sink disappeared during SDP grace period"
         elif [ "$(append_sdp_domains)" -gt 0 ] 2>/dev/null; then
             echo "[+] SDP domains blocked after ${CLOCK_SYNC_DELAY}s clock-sync grace period"
             if append_sdp_dns_artifact "$token"; then
-                if is_on dns.filter && [ -x "$DNS_FILTER_INIT" ]; then
-                    "$DNS_FILTER_INIT" reload || echo "[-] DNS filter reload failed after SDP update"
-                fi
+                reload_sdp_dns || { sdp_ok=0; echo "[-] DNS filter reload failed after SDP update"; }
             else
+                sdp_ok=0
                 echo "[-] failed to publish DNS artifact after SDP update"
             fi
         else
+            sdp_ok=0
             echo "[-] failed to add SDP domains after clock-sync grace period"
         fi
+        [ "$sdp_ok" = 1 ] || echo failed > /var/lib/webosbrew/lifesgoodwithoutspying.result
         pending_hosts_clear "$token"
     ) &
     pending_pid=$!
@@ -205,6 +232,7 @@ apply_hosts() {
     # leaving whatever is underneath.
     pending_hosts_cancel
     unmount_ours
+    hosts_ours_active && { echo "[-] old hosts mount could not be removed"; return 1; }
 
     collect_domains initial > "$DOMAINS_TMP"
     count="$(grep -c . "$DOMAINS_TMP" 2>/dev/null)"
@@ -215,13 +243,13 @@ apply_hosts() {
 
     if [ "$count" -eq 0 ] && [ "$sdp_pending" -eq 0 ]; then
         echo "[~] no domain categories enabled; our sink is off"
-        write_empty_generated_hosts || echo "[-] failed to write empty generated hosts marker"
-        write_dns_artifact "$DOMAINS_TMP" "empty-$generation" || echo "[-] failed to write empty DNS artifact"
+        write_empty_generated_hosts || return 1
+        write_dns_artifact "$DOMAINS_TMP" "empty-$generation" || return 1
         rm -f "$DOMAINS_TMP" "$KEYS_TMP"
         return 0
     fi
 
-    cp /etc/hosts "$HOSTS_GEN" || return 1
+    cp /etc/hosts "$HOSTS_GEN.tmp.$$" && mv "$HOSTS_GEN.tmp.$$" "$HOSTS_GEN" || return 1
     {
         echo ""
         echo "$NOSPY_MARKER generation $generation"
@@ -298,41 +326,39 @@ apply_stub_category() {
     exec_fn="$3"
 
     if ! is_on "$key"; then
-        stub_clear_key "$key"
-        if command -v systemctl >/dev/null 2>&1; then
-            "$unit_fn" > "$UNITS_TMP"
-            while IFS= read -r unit; do
-                [ -n "$unit" ] || continue
-                # --no-block: these units take the full 90s stop/start timeout
-                # otherwise, which would stall the whole apply.
-                systemctl --no-block start "$unit" >/dev/null 2>&1
-            done < "$UNITS_TMP"
-        fi
+        stub_clear_key "$key" && units_restore "$key" || return 1
         echo "[~] $key disabled"
         return 0
     fi
 
-    if command -v systemctl >/dev/null 2>&1; then
-        "$unit_fn" > "$UNITS_TMP"
-        while IFS= read -r unit; do
-            [ -n "$unit" ] || continue
-            systemctl --no-block stop "$unit" >/dev/null 2>&1
-        done < "$UNITS_TMP"
-    fi
+    category_ok=0
+    "$unit_fn" > "$UNITS_TMP"
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        service_stop "$key" "$unit" || category_ok=1
+    done < "$UNITS_TMP"
 
-    stub_write
-    stub_clear_key "$key"
-    "$exec_fn" > "$EXECS_TMP"
+    stub_write || return 1
+    stub_clear_key "$key" || return 1
+    "$exec_fn" | existing_targets > "$EXECS_TMP"
     n=0
     while IFS= read -r path; do
         [ -n "$path" ] || continue
+        [ -f "$path" ] || continue
         if stub_mount "$key" "$path"; then
             n=$((n + 1))
+        else
+            echo "[-] could not block $path"
+            category_ok=1
         fi
     done < "$EXECS_TMP"
     echo "[+] $key: stubbed $n executable(s)"
 
     kill_by_paths "$EXECS_TMP"
+    units_verify_stopped "$key" || category_ok=1
+    [ "$n" -gt 0 ] || category_ok=1
+    [ "$(count_running_paths "$EXECS_TMP")" = 0 ] || category_ok=1
+    return "$category_ok"
 }
 
 # Ad / ACR / telemetry daemons.
@@ -343,6 +369,7 @@ apply_ads() {
 # Voice services, and the voice app if it is already up.
 apply_voice() {
     apply_stub_category voice.stop voice_units voice_execs
+    voice_rc=$?
     if is_on voice.stop; then
         voice_apps > "$APPS_TMP"
         while IFS= read -r id; do
@@ -350,6 +377,7 @@ apply_voice() {
             app_close "$id"
         done < "$APPS_TMP"
     fi
+    return "$voice_rc"
 }
 
 # ThinQ / Alexa / IoT companions (opt-in through domains.thinq).
@@ -363,19 +391,21 @@ apply_lan() {
         # Put the real binary back and clear any stub process that outlived its
         # mount. A stub shell still holds the "upnpd" name, so the supervisor
         # would not spawn the real binary until it is gone.
-        upnp_unstub
+        upnp_changed=0
+        upnp_unstub && upnp_changed=1
+        upnp_stub_active && return 1
         # Ensure discovery is running. Both are cheap when it already is:
         # ssdp_restore is async, and upnp_restore skips the luna ping when a
         # real upnpd is up.
-        ssdp_restore
-        upnp_restore
+        ssdp_restore || return 1
+        [ "$upnp_changed" = 0 ] || upnp_restore
         return 0
     fi
     if [ ! -f /usr/sbin/upnpd ]; then
         echo "[-] /usr/sbin/upnpd not found; skipping lan block"
         return 1
     fi
-    if ! head -n 2 /usr/sbin/upnpd 2>/dev/null | grep -q 'nospy-upnpd-stub'; then
+    if ! upnp_stub_active; then
         if mount --bind "$DIR/nospy-upnpd-stub" /usr/sbin/upnpd; then
             echo "[+] stubbed /usr/sbin/upnpd"
         else
@@ -395,12 +425,11 @@ apply_lan() {
         echo "[+] killed running upnpd"
     fi
     # the watcher used to keep ssdp down; do it here now.
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl --no-block stop ssdp-discovery-lgtv >/dev/null 2>&1 || true
-    fi
-    if pkill -9 ssdp 2>/dev/null; then
+    service_stop lan.block ssdp-discovery-lgtv.service || return 1
+    if pkill -x -9 ssdp 2>/dev/null; then
         echo "[+] killed ssdp"
     fi
+    units_verify_stopped lan.block
 }
 
 apply_purge() {
@@ -418,11 +447,21 @@ elif [ -f "$DNS_FILTER_STATE" ] && [ -x "$DNS_FILTER_INIT" ]; then
     echo "[-] domain generation failed; stopping the DNS handoff to avoid stale rules"
     "$DNS_FILTER_INIT" disable || dns_filter_ok=0
 fi
-apply_ads
-apply_voice
-apply_thinq
-apply_lan
-apply_purge
+apply_ok=1
+apply_ads || apply_ok=0
+apply_voice || apply_ok=0
+apply_thinq || apply_ok=0
+apply_lan || apply_ok=0
+apply_purge || apply_ok=0
+if [ "$apply_ok" = 1 ]; then
+    watch_start || { apply_ok=0; echo "[-] could not start target maintenance"; }
+fi
+[ "$hosts_ok" = 1 ] && [ "$dns_filter_ok" = 1 ] && [ "$apply_ok" = 1 ] || {
+    echo failed > /var/lib/webosbrew/lifesgoodwithoutspying.result
+    echo "[-] selected protection checks failed; see the log"
+    exit 1
+}
+echo passed > /var/lib/webosbrew/lifesgoodwithoutspying.result
 
 if [ "$dns_filter_ok" -ne 1 ]; then
     echo "[-] one or more DNS handoff operations failed"

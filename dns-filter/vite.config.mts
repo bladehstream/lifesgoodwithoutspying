@@ -44,10 +44,12 @@ export default defineConfig({
     },
     rollupOptions: {
       external: [
+        'crypto',
         'dgram',
         'dns',
         'fs',
         'net',
+        'os',
       ],
     },
   },

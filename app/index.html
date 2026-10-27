@@ -32,7 +32,8 @@
     </section>
 
     <section class="tools">
-      <button id="btn-purge">Purge now</button>
+      <button id="btn-restore">Restore changes</button>
+      <button id="btn-purge" data-unavailable="true" disabled>Purge unavailable</button>
       <button id="btn-selftest">Self-test</button>
       <button id="btn-refresh">Refresh</button>
       <button id="btn-log">Show log</button>
@@ -72,11 +73,11 @@
           </button>
           <button class="layer" data-key="dns.filter" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b>Local DNS filter</b><small>Routes ConnMan IPv4 DNS through the local helper; IPv6 is a separate companion choice</small></span>
+            <span class="layer-text"><b>Local DNS filter</b><small>Filters the TV resolver on newer models, or redirects IPv4 DNS where supported. Direct or encrypted DNS may bypass filtering.</small></span>
           </button>
           <button class="layer" data-key="dns.disable_ipv6" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b>Disable IPv6 with DNS filter</b><small>Companion switch; turns ConnMan IPv6 off only while the DNS filter is enabled. If off, IPv6 DNS may bypass the helper.</small></span>
+            <span class="layer-text"><b>Disable IPv6 with DNS filter</b><small>Companion switch; turns automatic ConnMan IPv6 off only while the DNS filter is enabled. If off, IPv6 DNS may bypass the helper.</small></span>
           </button>
           <button class="layer" data-key="voice.stop" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
@@ -94,9 +95,9 @@
             <span class="sw" aria-hidden="true"></span>
             <span class="layer-text"><b>ThinQ &amp; companion</b><small>Optional. Stops ThinQ/Alexa/IoT daemons and breaks the LG ThinQ app</small></span>
           </button>
-          <button class="layer" data-key="purge.boot" role="switch" aria-checked="false">
+          <button class="layer" data-key="purge.boot" data-unavailable="true" disabled role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b>Purge on boot</b><small>Clear ACR and voice data at startup</small></span>
+            <span class="layer-text"><b>Purge on boot</b><small>Unavailable until cache paths are verified for this firmware</small></span>
           </button>
           <button class="layer" data-key="domains.lgchannels" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>

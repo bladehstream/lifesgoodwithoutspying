@@ -24,7 +24,7 @@ jobs:
         run: npm install -g @webos-tools/cli
 
       - name: Install icon renderer
-        run: sudo apt-get update && sudo apt-get install -y librsvg2-bin
+        run: sudo apt-get update && sudo apt-get install -y librsvg2-bin dbus python3-dbus python3-gi
 
       - name: Syntax checks
         run: |
@@ -50,6 +50,13 @@ jobs:
           0.12.18 990b3b39b6290000da1c9fdb5352c2e81fca4e6eeaecfce77c46b3cea1a68dba
           8.12.0 3df19b748ee2b6dfe3a03448ebc6186a3a86aeab557018d77a0f7f3314594ef6
           EOF
+
+      - name: Compatibility regressions
+        run: |
+          python3 -m unittest discover -s tests -v
+          node tests/frontend.js
+          python3 tests/integration_dbus.py
+          (cd dns-filter && bun test)
 
       - name: Upload IPK
         uses: actions/upload-artifact@v4

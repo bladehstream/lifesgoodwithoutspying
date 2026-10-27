@@ -1,8 +1,11 @@
 import * as dgram from 'dgram';
+import { randomBytes } from 'crypto';
 import * as dns from 'dns';
 import * as net from 'net';
+import { networkInterfaces } from 'os';
 import { Blocklist, BlocklistMetadata, loadBlocklist } from './blocklist';
 import { allocBuffer, copyBuffer } from './buffer';
+import { healthResponse } from './probe';
 import { FilterConfig } from './config';
 import { DnsQuery, makeErrorResponse, makeNxDomainResponse, RCODE_SERVFAIL, parseDnsQuery } from './dns';
 
@@ -42,7 +45,7 @@ export class DnsFilterProxy {
   private readonly callbacks: ProxyCallbacks;
   private readonly pendingUdp = new Map<number, PendingUdp>();
   private readonly tcpClients: net.Socket[] = [];
-  private nextUpstreamId = 0;
+  private nextUpstreamId = randomBytes(2).readUInt16BE(0);
   private nextUpstreamTcpPortIndex = 0;
   private readonly tcpUpstreams: net.Socket[] = [];
 
@@ -51,6 +54,7 @@ export class DnsFilterProxy {
   private tcp: net.Server | null = null;
   private upstreamAddress = '';
   private upstreamFamily = 4;
+  private localClientAddresses: { [address: string]: boolean } = {};
   private started = false;
   private closed = false;
 
@@ -66,6 +70,18 @@ export class DnsFilterProxy {
       return;
     }
 
+    if (this.config.localClientsOnly) {
+      try {
+        const interfaces = networkInterfaces();
+        for (const name of Object.keys(interfaces)) {
+          for (const item of interfaces[name] || []) this.localClientAddresses[item.address] = true;
+        }
+      } catch (error) { callback(asError(error)); return; }
+      if (!this.localClientAddresses[this.config.listenAddress]) {
+        callback(new Error('restricted listener must use an address assigned to this TV'));
+        return;
+      }
+    }
     resolveHost(this.config.upstream.host, (error, address, family) => {
       if (error) {
         callback(error);
@@ -191,7 +207,7 @@ export class DnsFilterProxy {
     this.udp.on('message', (message: Buffer, remote: any) => {
       this.handleUdpMessage(message, remote);
     });
-    this.upstreamUdp.on('message', (message: Buffer) => this.handleUpstreamUdp(message));
+    this.upstreamUdp.on('message', (message: Buffer, remote: any) => this.handleUpstreamUdp(message, remote));
     this.udp.on('error', (error: Error) => {
       if (this.started) {
         this.reportError(error);
@@ -237,6 +253,7 @@ export class DnsFilterProxy {
   }
 
   private handleUdpMessage(message: Buffer, remote: any): void {
+    if (!this.isLocalClient(remote.address)) return;
     if (this.closed) {
       return;
     }
@@ -247,6 +264,8 @@ export class DnsFilterProxy {
       return;
     }
 
+    const health = healthResponse(message, query, this.blocklist.metadata.generation);
+    if (health !== null) { this.sendUdp(health, remote.port, remote.address); return; }
     if (this.blocklist.isBlocked(query.name)) {
       const response = makeNxDomainResponse(message, query);
       if (response === null) {
@@ -267,6 +286,10 @@ export class DnsFilterProxy {
       return;
     }
 
+    if (this.pendingUdp.size >= 1024) {
+      this.sendUdpFailure(message, parsed, remote);
+      return;
+    }
     const upstreamId = this.allocateUpstreamId();
     if (upstreamId === null) {
       this.log('dropped UDP query because all upstream IDs are in use');
@@ -328,7 +351,8 @@ export class DnsFilterProxy {
     this.sendUdp(response, client.port, client.address);
   }
 
-  private handleUpstreamUdp(message: Buffer): void {
+  private handleUpstreamUdp(message: Buffer, remote: any): void {
+    if (remote.address !== this.upstreamAddress || remote.port !== this.config.upstream.port) return;
     if (message.length < 12 || (message.readUInt16BE(2) & 0x8000) === 0) {
       return;
     }
@@ -339,6 +363,7 @@ export class DnsFilterProxy {
       return;
     }
 
+    if (!responseMatches(message, pending.query)) return;
     this.pendingUdp.delete(upstreamId);
     clearTimeout(pending.timer);
     const response = copyBuffer(message);
@@ -380,8 +405,7 @@ export class DnsFilterProxy {
 
   private allocateUpstreamId(): number | null {
     for (let attempt = 0; attempt < 0x10000; attempt += 1) {
-      const id = this.nextUpstreamId;
-      this.nextUpstreamId = (this.nextUpstreamId + 1) & 0xffff;
+      const id = randomBytes(2).readUInt16BE(0);
       if (!this.pendingUdp.has(id)) {
         return id;
       }
@@ -390,6 +414,8 @@ export class DnsFilterProxy {
   }
 
   private handleTcpConnection(socket: net.Socket): void {
+    if (!this.isLocalClient(socket.remoteAddress || '')) { socket.destroy(); return; }
+    if (this.tcpClients.length >= 32) { socket.destroy(); return; }
     this.tcpClients.push(socket);
     const state: TcpState = {
       buffer: allocBuffer(0),
@@ -437,6 +463,7 @@ export class DnsFilterProxy {
       const query = state.buffer.slice(2, length + 2);
       state.buffer = state.buffer.slice(length + 2);
       state.queue.push(query);
+      if (state.queue.length > 64) { socket.destroy(); return; }
     }
 
     if (state.busy || state.queue.length === 0 || socket.destroyed) {
@@ -468,6 +495,8 @@ export class DnsFilterProxy {
       return;
     }
 
+    const health = healthResponse(query, parsed, this.blocklist.metadata.generation);
+    if (health !== null) { callback(health); return; }
     if (this.blocklist.isBlocked(parsed.name)) {
       const response = makeNxDomainResponse(query, parsed);
       if (response === null) {
@@ -580,6 +609,7 @@ export class DnsFilterProxy {
           return;
         }
 
+        if (responseBuffer.length < 2) return;
         const length = socketBufferLength(responseBuffer);
         if (length === null) {
           finish(new Error('invalid upstream TCP DNS length'));
@@ -588,7 +618,8 @@ export class DnsFilterProxy {
         if (responseBuffer.length < length + 2) {
           return;
         }
-        if (responseBuffer.readUInt16BE(2) !== query.readUInt16BE(0)) {
+        if (length < 12 || !responseMatches(responseBuffer.slice(2, length + 2), query) ||
+            responseBuffer.readUInt16BE(2) !== query.readUInt16BE(0)) {
           finish(new Error('upstream TCP DNS response ID mismatch'));
           return;
         }
@@ -613,6 +644,10 @@ export class DnsFilterProxy {
     const span = end - start + 1;
     this.nextUpstreamTcpPortIndex = (this.nextUpstreamTcpPortIndex + 1) % span;
     return start + this.nextUpstreamTcpPortIndex;
+  }
+
+  private isLocalClient(address: string): boolean {
+    return !this.config.localClientsOnly || this.localClientAddresses[address] === true;
   }
 
   private logBlocked(name: string): void {
@@ -687,4 +722,15 @@ function asError(value: any): Error {
     return value;
   }
   return new Error(String(value));
+}
+
+function responseMatches(response: Buffer, query: Buffer): boolean {
+  if (response.length < 12 || (response.readUInt16BE(2) & 0x8000) === 0) return false;
+  const normalized = copyBuffer(response);
+  normalized.writeUInt16BE(response.readUInt16BE(2) & 0x7fff, 2);
+  const actual = parseDnsQuery(normalized);
+  const expected = parseDnsQuery(query);
+  return actual !== null && expected !== null &&
+    actual.questionCount === expected.questionCount && actual.name === expected.name &&
+    response.readUInt32BE(actual.questionEnd - 4) === query.readUInt32BE(expected.questionEnd - 4);
 }

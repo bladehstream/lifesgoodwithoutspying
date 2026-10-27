@@ -1,4 +1,6 @@
 #!/bin/sh
+# Keep native child tools independent of Homebrew's injected preload.
+unset LD_PRELOAD
 # lifesgoodwithoutspying control helper.
 #
 # Usage:
@@ -9,12 +11,13 @@
 INITD="/var/lib/webosbrew/init.d"
 LINK="$INITD/50-lifesgoodwithoutspying"
 LOG="/var/lib/webosbrew/lifesgoodwithoutspying.log"
-TMP="/tmp/lifesgoodwithoutspying.ctl.$$"
+WORK="$(mktemp -d /tmp/lifesgoodwithoutspying.ctl.XXXXXX)" || exit 1
+TMP="$WORK/ctl"
 
 # Drop our scratch files however we exit.
-trap 'rm -f "$TMP"*' EXIT
+trap 'lock_release; rm -f "$TMP"*; rmdir "$WORK"' EXIT
 
-SELF="$(realpath "$0")"
+SELF="$(readlink -f "$0" 2>/dev/null || realpath "$0")"
 DIR="$(dirname "$SELF")"
 . "$DIR/nospy-lib.sh"
 
@@ -68,16 +71,27 @@ is_known_key() {
 }
 
 case "$1" in
+    enable|disable|apply|purge|set)
+        # A short maintenance pass must not make a user action fail at random.
+        lock_attempt=0
+        until lock_acquire 2>/dev/null; do
+            [ "$lock_attempt" -lt 5 ] || { echo 'Another operation is busy; retry shortly. If interrupted, reboot before retrying.' >&2; exit 1; }
+            lock_attempt=$((lock_attempt + 1))
+            sleep 1
+        done
+        ;;
+esac
+case "$1" in
     enable)
         mkdir -p "$INITD"
         chmod +x "$APPLY" "$REMOVE"
-        "$APPLY"
-        ln -sf "$APPLY" "$LINK"
+        "$APPLY" || exit 1
+        ln -sf "$APPLY" "$LINK" || exit 1
         echo "autostart=on"
         ;;
     disable)
-        rm -f "$LINK"
-        "$REMOVE"
+        rm -f "$LINK" || exit 1
+        "$REMOVE" || exit 1
         echo "autostart=off"
         ;;
     apply)
@@ -98,11 +112,10 @@ case "$1" in
             on|off) ;;
             *) echo "value must be on or off" >&2; exit 2 ;;
         esac
-        conf_set "$key" "$val"
+        conf_set "$key" "$val" || exit 1
         echo "$key=$val"
-        # Re-apply so the change takes effect immediately.
-        chmod +x "$APPLY"
-        "$APPLY"
+        # Settings while disabled must not silently activate protection.
+        if [ -L "$LINK" ]; then "$APPLY"; fi
         ;;
     get)
         conf_get "$2"
@@ -116,19 +129,38 @@ case "$1" in
         echo "hosts=$(hosts_state)"
         echo "blocklist=$(blocklist_count)"
         echo "dns_filter=$(dns_filter_runtime)"
+        echo "dns_filter_mode=$(dns_filter_field mode)"
         echo "dns_filter_generation=$(dns_filter_field loaded_generation)"
         echo "dns_filter_rules=$(dns_filter_field loaded_rules)"
         echo "connman_nameservers=$(dns_filter_field connman_nameservers)"
         echo "dns_filter_ipv6_mode=$(dns_filter_field handoff_ipv6_mode)"
         echo "connman_ipv6=$(dns_filter_field connman_ipv6)"
         echo "stubs=$(stub_count)"
+        echo "last_apply=$(cat /var/lib/webosbrew/lifesgoodwithoutspying.result 2>/dev/null || echo unknown)"
+        echo "target_maintenance=$(watch_status)"
+        for category in ads.stop voice.stop domains.thinq; do
+            case "$category" in ads.stop) ads_execs ;; voice.stop) voice_execs ;; *) thinq_execs ;; esac | existing_targets > "$TMP.targets"
+            known=0; blocked=0
+            while IFS= read -r target; do
+                [ -f "$target" ] || continue
+                known=$((known + 1))
+                stub_owned "$target" && blocked=$((blocked + 1))
+            done < "$TMP.targets"
+            echo "$category.targets=$known"
+            echo "$category.blocked=$blocked"
+            if is_on "$category" && [ "$known" != "$blocked" ]; then
+                while IFS= read -r target; do
+                    stub_owned "$target" || echo "unblocked_target=$target"
+                done < "$TMP.targets"
+            fi
+        done
         conf_keys > "$TMP"
         while IFS= read -r key; do
             echo "$key=$(conf_get "$key")"
         done < "$TMP"
         rm -f "$TMP"
-        voice_execs > "$TMP.voice"
-        ads_execs > "$TMP.ads"
+        voice_execs | existing_targets > "$TMP.voice"
+        ads_execs | existing_targets > "$TMP.ads"
         if [ "$(count_running_paths "$TMP.voice")" -gt 0 ]; then
             echo "voice=running"
         else
@@ -151,6 +183,8 @@ case "$1" in
         if is_on dns.filter; then
             echo "configured=on"
             echo "runtime: $(dns_filter_runtime)"
+            echo "coverage mode: $(dns_filter_field mode)"
+            echo "ConnMan mode covers the TV resolver; direct and encrypted DNS can bypass it."
             echo "handoff IPv6 mode: $(dns_filter_field handoff_ipv6_mode)"
             echo "loaded generation: $(dns_filter_field loaded_generation)"
             echo "loaded rules: $(dns_filter_field loaded_rules)"
@@ -170,10 +204,10 @@ case "$1" in
         echo
         echo "== local resolution (getent; diagnostic only) =="
         for d in ad.lgsmartad.com alphonso.tv recommend.lgtvcommon.com; do
-            printf "  %-30s %s\n" "$d" "$(getent hosts "$d" 2>/dev/null | awk '{print $1}' | head -1)"
+            printf "  %-30s %s\n" "$d" "$(bounded getent hosts "$d" 2>/dev/null | awk '{print $1}' | head -1)"
         done
-        printf "  %-30s %s\n" "lgtvonline.lge.com (control)" "$(getent hosts lgtvonline.lge.com 2>/dev/null | awk '{print $1}' | head -1)"
-        printf "  %-30s %s\n" "gb.nextlgsdp.com (SDP clock)" "$(getent hosts gb.nextlgsdp.com 2>/dev/null | awk '{print $1}' | head -1)"
+        printf "  %-30s %s\n" "lgtvonline.lge.com (control)" "$(bounded getent hosts lgtvonline.lge.com 2>/dev/null | awk '{print $1}' | head -1)"
+        printf "  %-30s %s\n" "gb.nextlgsdp.com (SDP clock)" "$(bounded getent hosts gb.nextlgsdp.com 2>/dev/null | awk '{print $1}' | head -1)"
         echo "  NOTE: getent uses this shell's resolver and the mounted /etc/hosts;"
         echo "        it does not prove that webOS daemons use the same DNS path."
         state="$(hosts_state)"
@@ -216,7 +250,7 @@ case "$1" in
         echo "  NOTE: curl also uses the mounted /etc/hosts; this is not a TV process test."
         echo
         echo "== voice processes (effective protection check) =="
-        voice_execs > "$TMP.voice"
+        voice_execs | existing_targets > "$TMP.voice"
         if [ "$(count_running_paths "$TMP.voice")" -gt 0 ]; then
             echo "  voice: running (protection NOT active)"
         else
@@ -225,7 +259,7 @@ case "$1" in
         rm -f "$TMP.voice"
         echo
         echo "== ACR / ad services (effective protection check) =="
-        ads_execs > "$TMP.ads"
+        ads_execs | existing_targets > "$TMP.ads"
         if [ "$(count_running_paths "$TMP.ads")" -gt 0 ]; then
             echo "  ad processes: running (protection NOT active)"
         else
@@ -233,7 +267,7 @@ case "$1" in
         fi
         rm -f "$TMP.ads"
         echo "  Luna bus entries:"
-        ls-monitor -l 2>/dev/null | grep -iE 'service\.acr|service\.livepick|colorInfoMiner|service\.admanager|service\.adoverlay|service\.tvdataexchang|acr2|nudge|rdxd|uploadd|sportsalarm' | grep -vi 'wowplay' || echo "  (none)"
+        bounded ls-monitor -l 2>/dev/null | grep -iE 'service\.acr|service\.livepick|colorInfoMiner|service\.admanager|service\.adoverlay|service\.tvdataexchang|acr2|nudge|rdxd|uploadd|sportsalarm' | grep -vi 'wowplay' || echo "  (none)"
         echo
         echo "== buffered ACR / voice residue files =="
         find /var/log /tmp /var/run -maxdepth 3 -type f \

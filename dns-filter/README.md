@@ -1,156 +1,59 @@
-# Local DNS filter helper
+# DNS compatibility helper
 
-This directory contains the optional on-TV DNS filtering helper.
+Build: `bun install --frozen-lockfile && bun run build`.
+Tests: `bun test` and `bun run smoke`. Parent README covers the two TVs.
 
-The helper is a small DNS proxy:
+`tv-handoff.sh plan` is read-only and reports the automatically selected mode.
+`NOSPY_DNS_MODE=redirect|connman` overrides auto for controlled testing.
 
-- it listens for UDP and TCP DNS
-- returns NXDOMAIN for names in the supplied blocklist
-- forwards other queries to the configured upstream resolver
-- uses only Node core modules in the generated bundle
+## Redirect mode
 
-## Build and test
+On the B9, the helper listens on 127.0.0.1:5354 and IPv4 NAT OUTPUT redirects
+UDP/TCP port 53 to it. Dedicated upstream source ports avoid recursion.
+Stateful cleanup removes only recorded rules. The opt-in IPv6-off companion
+retains the previous automatic/off method and mounts an IPv4-only resolv.conf.
 
-From the repository root:
+## ConnMan mode
 
-```sh
-cd dns-filter
-bun install
-bun run check
-bun test
-bun run build
-bun run smoke
-```
+Auto detects a kernel explicitly built with CONFIG_NETFILTER unset, as on the
+UR8050PSB. It requires busctl and does not invoke iptables or load modules.
+The helper binds the active TV IPv4 address on port 53 and is started with
+`--local-clients-only`. A non-loopback CLI listener without that flag is refused.
+UDP sources outside the TV's assigned addresses are ignored; TCP peers outside
+that set are closed. This is source-address filtering, not cryptographic client
+identity or a replacement for a firewall against forged-source traffic.
 
-The production bundle is written to `dist/nospy-dns-filter.js` as CommonJS.
-The bundle is lowered to ES5 so it also runs on Node 0.12 (webOS 3.x), not
-just Node 8.12 (webOS 4-6); `src/buffer.ts` covers the Buffer APIs Node 0.12
-lacks. `bun test` exercises the source; `bun run smoke` also exercises the
-generated bundle, its acknowledged blocklist-reload protocol, and UDP/TCP
-forwarding. Set `NOSPY_DNS_NODE` to run the bundle under another Node binary,
-as CI does for 0.12.18 and 8.12.0.
+ConnMan can bind upstream DNS sockets to the physical interface, so simply
+using 127.0.0.2 as its nameserver is unreliable. Its original DNS configuration
+array (including an empty DHCP array) is captured through typed D-Bus properties
+before a write. The helper starts before Nameservers.Configuration is changed.
+Both configured and effective nameservers must point at the helper. Restoration
+preserves original DNS order and refuses to overwrite unrelated external changes.
+Failed restoration retains state and the helper for inspection and retry.
 
-## Run
+This covers clients using ConnMan's resolver. Direct DNS, DoH/DoT, direct IPs
+and unidentified collection components can bypass it. Nothing changes the
+router DNS, default route, Wi-Fi credentials or IP configuration.
 
-The listener defaults to `127.0.0.2:5353` to avoid accidentally taking over
-during development. Port 53 and a root listener are
-intentionally explicit:
+## Verification and recovery
 
-```sh
-node dist/nospy-dns-filter.js \
-  --listen-address 127.0.0.2 \
-  --listen-port 5353 \
-  --upstream 192.168.1.1:53 \
-  --blocklist /path/to/generated-blocklist.txt
-```
+Both modes must pass a generation-specific UDP/TCP health query through the
+actual resolver/redirect before enable succeeds. The reserved TXT health name
+never goes upstream, has TTL zero, and changes with the rule generation.
+If the path fails, enable attempts rollback. Status also requires a live verified
+helper, matching generation, correct network path and a successful health probe.
+This proves the path reaches this helper; it does not prove comprehensive privacy.
 
-To use the app's generated hosts file directly, select the marker-aware
-parser:
+`disable` restores the recorded handoff; `reload` acknowledges the new artifact
+or retains the previous generation with failure status. No automatic upstream
+failover or network watcher is implemented. Reapply after interface/DNS/address
+changes. A stopped helper can leave DNS unavailable until restore/reapply.
+A forced kill or power failure can interrupt rollback; retain the state files.
 
-```sh
-node dist/nospy-dns-filter.js \
-  --listen-address 127.0.0.2 \
-  --listen-port 5353 \
-  --upstream 192.168.1.1:53 \
-  --blocklist /var/lib/webosbrew/lifesgoodwithoutspying.hosts \
-  --blocklist-format hosts
-```
+The artifact starts with:
 
-In `hosts` mode, only `0.0.0.0` and `::` entries after the app's generation
-marker are used. The original `localhost` and other system aliases are ignored.
-A missing marker is an error rather than an empty allow-all list.
+    # lifesgoodwithoutspying dns-filter generation TOKEN rules COUNT
 
-The TV handoff uses the app's canonical artifact instead:
-`/var/lib/webosbrew/lifesgoodwithoutspying.dns`. It is atomically replaced and
-contains a generation header plus the declared rule count, for example:
-
-```text
-# lifesgoodwithoutspying dns-filter generation 1720000000-123 rules 2
-ads.example.test
-telemetry.example.test
-```
-
-The helper publishes the successfully loaded generation and counts to its
-status file. `tv-handoff.sh reload` waits for that acknowledgement; malformed,
-partial, or count-mismatched generations leave the previous blocklist active.
-
-Use `--upstream '[2001:db8::1]:53'` for an IPv6 upstream. `--log-blocked`
-enables blocked-name logging; it is off by default because query names can be
-sensitive.
-
-For the TV handoff, use the acknowledged control action after atomically
-replacing the canonical artifact:
-
-```sh
-scripts/tv-handoff.sh reload
-```
-
-A direct `SIGHUP` remains supported for generic/manual use, but only the
-handoff action waits for the helper's success/failure status. A failed reload
-is logged and the previous blocklist remains active.
-
-In the default `domains` format, blocklist files contain one domain per line.
-Blank lines and `#` comments are ignored. Plain names match exactly;
-`*.example.com` also matches subdomains. In `hosts` mode, the marker-aware
-parser extracts the app-generated sink entries instead. Do not include QuickSet
-unless that protection is intentionally enabled.
-
-## TV handoff
-
-`scripts/tv-handoff.sh` is a controlled, reversible handoff for the TV
-integration. The app build copies it and the generated bundle into the IPK;
-the `dns.filter` app setting controls it. It uses an nftables/iptables-style
-port-53 divert at the host level:
-
-- keeps ConnMan listening on `127.0.0.1:53` unchanged;
-- optionally disables the service's IPv6 configuration when the app's separate
-  `dns.disable_ipv6` companion switch is on. In that mode it also bind-mounts a
-  read-only `resolv.conf` listing only `127.0.0.1`: ConnMan's proxy on `::1`
-  keeps forwarding to the IPv6 upstream it learned before IPv6 was turned off,
-  those queries are never answered, and the system resolver would otherwise
-  wait out its 5-second timeout on `::1` before every lookup;
-- runs the filter on `127.0.0.1:5354`;
-- NATs outbound UDP and TCP port-53 queries to that helper, so ConnMan's
-  resolver traffic and every other local DNS attempt is filtered;
-- the helper's own upstream sockets are exempted from the divert: its UDP
-  upstream source port is pinned to 15354 and its TCP upstream source ports
-  rotate across 15355:15483;
-- restores ConnMan's IPv6 setting and `resolv.conf` and removes the NAT rules
-  on disable. If
-  ConnMan does not report the original value back, the handoff keeps its
-  state/helper for a later retry instead of claiming a successful rollback.
-
-The script obtains the active ConnMan service, its interface/address, and its
-active resolvers from one D-Bus snapshot at runtime. It rejects multiple
-active services or multiple IPv4 resolvers rather than guessing. It also stores
-only the resolver settings needed for rollback; it does not log or copy Wi-Fi
-credentials.
-
-Read-only inspection and a controlled enable/disable test can be run with:
-
-```sh
-scripts/tv-handoff.sh plan
-scripts/tv-handoff.sh status
-sudo scripts/tv-handoff.sh enable
-sudo scripts/tv-handoff.sh reload
-sudo scripts/tv-handoff.sh disable
-```
-
-The app's `dns.filter` setting defaults to off. The separate
-`dns.disable_ipv6` companion setting also defaults to off and is honored only
-while `dns.filter` is on. When enabled, the apply hook starts/reloads this
-handoff; disabling protection or the DNS filter runs the rollback path. The
-normal app build includes the bundle, but does not alter ConnMan until the
-DNS filter is explicitly enabled. If IPv6 is preserved, ConnMan may retain an
-IPv6 DHCP nameserver and IPv6 DNS can bypass the IPv4 helper.
-
-## Deliberate limitations
-
-The Node helper does not replace ConnMan and is not a firewall by itself. It
-cannot block DNS-over-TLS, DNS-over-HTTPS, direct-IP connections, or a process
-that uses a custom encrypted resolver. If the helper exits unexpectedly while
-enabled, locally generated port-53 queries remain bound to the redirect rules
-until the NAT rules are rolled back; this fails closed but can cause a DNS
-outage. The NAT divert only covers outbound IPv4 UDP/TCP port 53; IPv6 traffic
-is not caught by it. The existing hosts mount and executable stubs remain
-useful defense-in-depth layers.
+Plain rules match exactly; *.suffix matches subdomains. Shell operations share
+an atomic mutation lock. See `scripts/tv-dns-trial.sh` for a bounded, no-install
+trial with automatic restoration and IPv6 preserved.

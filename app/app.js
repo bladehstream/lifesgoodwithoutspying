@@ -150,7 +150,13 @@
     }
     function ctl(action, quiet) {
         return getFolder().then(function (dir) {
-            return exec('sh ' + shq(dir + '/init/nospy-ctl.sh') + ' ' + action, quiet);
+            return exec('LD_PRELOAD= sh ' + shq(dir + '/init/nospy-ctl.sh') + ' ' + action +
+                '; nospy_rc=$?; printf "\\nNOSPY_EXIT=%s\\n" "$nospy_rc"', quiet).then(function (res) {
+                var match = /(?:^|\n)NOSPY_EXIT=([0-9]+)\s*$/.exec(res.stdoutString || '');
+                if (!match || match[1] !== '0')
+                    throw new Error('Operation failed or its completion could not be confirmed. Open the log and refresh status.');
+                return res;
+            });
         });
     }
     function parseStatus(text) {
@@ -210,15 +216,15 @@
             (map.hosts === 'external' ? 'other' : 'off'));
         var dnsRuntime = map.dns_filter || 'unavailable';
         var dnsEnabled = map['dns.filter'] === 'on';
-        var dnsIpv6Disabled = map['dns.disable_ipv6'] === 'on';
+        var dnsIpv6Disabled = map.dns_filter_ipv6_mode === 'off' && dnsRuntime === 'yes';
         document.getElementById('r-dns').textContent =
             dnsEnabled ?
-                (dnsRuntime === 'yes' ? 'active' :
+                (dnsRuntime === 'yes' ? (map.dns_filter_mode === 'connman' ? 'active (resolver)' : 'active (redirect)') :
                     (dnsRuntime === 'no' ? 'pending' : 'unavailable')) : 'off';
         document.getElementById('r-ipv6').textContent =
             !dnsEnabled ? 'not managed' : (dnsIpv6Disabled ? 'disabled' : 'preserved');
-        document.getElementById('r-voice').textContent = map.voice === 'stopped' ? 'stopped' : 'running';
-        document.getElementById('r-ads').textContent = map.ads === 'stopped' ? 'stopped' : 'running';
+        document.getElementById('r-voice').textContent = map['voice.stop.targets'] === '0' ? 'unknown' : (map.voice || 'unknown');
+        document.getElementById('r-ads').textContent = map['ads.stop.targets'] === '0' ? 'unknown' : (map.ads || 'unknown');
         var verdict = document.getElementById('verdict');
         var explain = document.getElementById('explain');
         verdict.classList.remove('is-secure', 'is-warn', 'is-danger');
@@ -242,11 +248,44 @@
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
             }
+            else if (map.last_apply === 'applying') {
+                verdict.textContent = 'Applying protection';
+                explain.textContent = 'Waiting for startup checks to finish. Refresh shortly.';
+                verdict.classList.add('is-warn');
+            }
+            else if (map.hosts === 'failed') {
+                verdict.textContent = 'SDP update needs attention';
+                explain.textContent = 'The delayed domain update did not finish. Open the current log, then update protection.';
+                verdict.classList.add('is-warn');
+            }
             else if (map['dns.filter'] === 'on' && map.dns_filter !== 'yes') {
                 verdict.textContent = 'DNS filter needs attention';
                 explain.textContent = 'The DNS filter is enabled but its ConnMan handoff is not active. Check the log and helper status.';
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
+            }
+            else if (['ads.stop', 'voice.stop', 'domains.thinq'].some(function (key) {
+                return map[key] === 'on';
+            }) && map.target_maintenance !== 'running') {
+                verdict.textContent = 'Target maintenance needs attention';
+                explain.textContent = 'Automatic handling of new app-jail targets is inactive or failed. Open the current log, then update protection.';
+                verdict.classList.add('is-warn');
+            }
+            else if (map.last_apply !== 'passed' ||
+                ((map.hosts !== 'ours' && map.hosts !== 'waiting') && Number(map.blocklist) > 0) ||
+                ['ads.stop', 'voice.stop', 'domains.thinq'].some(function (key) {
+                    return map[key] === 'on' && (Number(map[key + '.targets']) < 1 ||
+                        map[key + '.targets'] !== map[key + '.blocked']);
+                }) || (map['voice.stop'] === 'on' && map.voice !== 'stopped') ||
+                (map['ads.stop'] === 'on' && map.ads !== 'stopped')) {
+                verdict.textContent = 'Protection needs attention';
+                explain.textContent = 'Some selected targets are missing, unblocked, or failed. New app-jail targets are checked every 15 seconds; refresh, or open the current log and update protection.';
+                verdict.classList.add('is-warn');
+            }
+            else if (map['dns.filter'] === 'on' && map.dns_filter_mode === 'connman') {
+                verdict.textContent = 'TV resolver filtering active';
+                explain.textContent = 'The TV resolver uses the local filter. Direct DNS, encrypted DNS and unrecognized collection paths can bypass it.';
+                verdict.classList.add('is-warn');
             }
             else if (map['dns.filter'] === 'on' && map['dns.disable_ipv6'] === 'off') {
                 verdict.textContent = 'DNS filter active (IPv4 path)';
@@ -261,8 +300,8 @@
                 appEl.classList.add('secured', 'pending');
             }
             else {
-                verdict.textContent = 'Protected';
-                explain.textContent = 'Targeted ad and voice services are stopped; enabled domain blocks are applied.';
+                verdict.textContent = 'Selected checks passed';
+                explain.textContent = 'Selected known targets passed. Other collection paths may exist; encrypted DNS can bypass domain filtering.';
                 verdict.classList.add('is-secure');
                 appEl.classList.add('secured');
             }
@@ -335,7 +374,7 @@
             stopStatusPolling();
             restoreFocus = document.activeElement;
         }
-        allButtons().forEach(function (b) { b.disabled = on; });
+        allButtons().forEach(function (b) { b.disabled = on || b.getAttribute('data-unavailable') === 'true'; });
         invalidateNavigation();
         if (!on) {
             var target = document.getElementById('btn-main');
@@ -356,7 +395,7 @@
         return Promise.resolve()
             .then(fn)
             .then(then)
-            .catch(function (e) { log('! ' + errmsg(e)); showConsole(true); })
+            .catch(function (e) { log('! ' + errmsg(e)); showConsole(true); return ctl('log').catch(function () {}).then(function () { return refresh({ quiet: true }); }); })
             .then(function () { busy(false); });
     }
     toggleButtons().forEach(function (btn) {
@@ -368,8 +407,7 @@
             run(key + ' = ' + next, function () {
                 return ctl('set ' + key + ' ' + next);
             }, function () {
-                if (enabled)
-                    dirty = true;
+                dirty = false;
                 return refresh();
             });
         });
@@ -394,6 +432,12 @@
             });
         }
     });
+    document.getElementById('btn-restore').addEventListener('click', function () {
+        run('Restore changes', function () { return ctl('disable'); }, function () {
+            dirty = false;
+            return refresh();
+        });
+    });
     document.getElementById('btn-purge').addEventListener('click', function () {
         run('Purge ACR and voice residue', function () { return ctl('purge'); }, refresh);
     });
@@ -405,7 +449,9 @@
         run('Refresh', refresh);
     });
     logBtn.addEventListener('click', function () {
-        showConsole(logView.hidden);
+        var show = logView.hidden;
+        showConsole(show);
+        if (show) ctl('log').catch(function (e) { log(errmsg(e)); });
     });
     // d-pad navigation
     function invalidateNavigation() {

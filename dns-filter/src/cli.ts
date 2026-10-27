@@ -2,8 +2,10 @@ import { renameSync, unlinkSync, writeFileSync } from 'fs';
 import { Blocklist, loadBlocklist } from './blocklist';
 import { ParsedArgs, parseArgs, usage } from './config';
 import { DnsFilterProxy } from './proxy';
+import { mainProbe } from './probe';
 
 export function main(args: string[]): void {
+  if (args[0] === '--probe') { mainProbe(args.slice(1)); return; }
   let parsed: ParsedArgs;
   try {
     parsed = parseArgs(args);

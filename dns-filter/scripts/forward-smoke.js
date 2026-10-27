@@ -161,6 +161,28 @@ function queryTcp(port, query) {
   });
 }
 
+// Bun ignores localAddress; run this real source-address check in Node.
+function expectForeignTcpRejected(port) {
+  return new Promise((resolve, reject) => {
+    const socket=net.createConnection({host:'127.0.0.1',port:port,localAddress:'127.0.0.2'});
+    let connected=false, finished=false;
+    const finish=(error) => {
+      if(finished)return;finished=true;socket.destroy();
+      if(error)reject(error);else resolve();
+    };
+    socket.setTimeout(2000,()=>finish(new Error('foreign TCP client was not rejected')));
+    socket.on('connect',()=>{
+      connected=true;
+      if(socket.localAddress!=='127.0.0.2')return finish(new Error('test source address was not honored'));
+      socket.write(frame(makeQuery(0x4545,'blocked.example.test')));
+    });
+    socket.on('data',()=>finish(new Error('foreign TCP client received a DNS response')));
+    socket.on('end',()=>finish());
+    socket.on('error',(error)=>{ if(connected && error.code==='ECONNRESET')finish();else finish(error); });
+    socket.on('close',()=>{if(!finished)finish(connected ? undefined : new Error('connection never opened'));});
+  });
+}
+
 function expectAnswer(response, id, rcode, description) {
   if (response.readUInt16BE(0) !== id) {
     throw new Error(description + ': response ID mismatch');
@@ -178,6 +200,7 @@ function expectAnswer(response, id, rcode, description) {
   const sourcePort = await freePort();
   child = childProcess.spawn(runtime, [
     bundle,
+    '--local-clients-only',
     '--listen-address', '127.0.0.1',
     '--listen-port', String(listenPort),
     '--upstream', '127.0.0.1:' + upstreamPort,
@@ -193,6 +216,10 @@ function expectAnswer(response, id, rcode, description) {
   expectAnswer(await queryTcp(listenPort, makeQuery(0x3333, 'blocked.example.test')), 0x3333, 3, 'blocked TCP');
   expectAnswer(await queryTcp(listenPort, makeQuery(0x4444, 'allowed.example.test')), 0x4444, 0, 'forwarded TCP');
 
+  await expectForeignTcpRejected(listenPort);
+  const probe = childProcess.spawnSync(runtime, [bundle, '--probe', '127.0.0.1:' + listenPort, 'smoke'], {encoding:'utf8', timeout:8000});
+  if (probe.status !== 0) throw new Error('path probe failed: ' + probe.stdout + probe.stderr);
+  console.log(probe.stdout.trim());
   console.log('forwarding smoke passed');
   cleanup();
 })().catch((error) => {

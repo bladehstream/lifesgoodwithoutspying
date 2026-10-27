@@ -5,19 +5,19 @@
 <li>Blackholes LG ad / ACR / telemetry domains to loopback by bind-mounting a generated /etc/hosts (per-category toggles, including separate crash/diagnostic, QuickSet, and optional ThinQ / companion and Home app-session lists).</li>
 <li>Keeps UEI QuickSet remote-code lookup available by default; an optional QuickSet toggle can block it.</li>
 <li>Delays blocking LG Service Delivery Platform (SDP) clock hosts for 60 seconds, while applying all other domain blocks immediately, so webOS can set its clock first.</li>
-<li>Optionally routes ConnMan IPv4 DNS through a reversible local filter using the same marked domain list; when the filter is enabled, a separate companion switch can disable ConnMan IPv6 for strict DNS coverage.</li>
+<li>Optionally routes ConnMan IPv4 DNS through a reversible local filter using the same marked domain list; a separate companion switch can disable ConnMan IPv6 while filtering is enabled; direct or encrypted DNS can still bypass it.</li>
 <li>Stops the on-TV ad, ACR and telemetry daemons (admanager, livepick, acr2, nudge, rdxd, uploadd, sportsalarm).</li>
 <li>Stops the LG voice and NLP services (voiceinput, voiceconductor, nlpmanager, performer) and the voice app.</li>
-<li>Bind-mounts an inert stub over each target binary, so the Luna hub cannot respawn it (no polling loop).</li>
+<li>Bind-mounts an inert stub over each target binary, so the Luna hub cannot respawn it. A 15-second worker checks selected known paths for late app-jail copies.</li>
 <li>With the ThinQ / companion toggle on, also stops the assistant and IoT daemons (trigger_thinq, trigger_alexa, iot-client, iot-proxy).</li>
 <li>Disabling protection puts the stopped services and the UPnP/SSDP daemons back, rather than leaving them down until a reboot.</li>
 <li>Optionally swaps /usr/sbin/upnpd for an inert stub, killing UPnP discovery both ways (breaks casting to the TV too).</li>
-<li>Wipes locally buffered ACR / speech-to-text files.</li>
+<li>Cache purge is unavailable pending firmware-specific path verification.</li>
 <li>Re-applies everything at boot through a Homebrew Channel init.d hook.</li>
 </ul>
 <h2>Requirements</h2>
 <ul>
-<li>A rooted LG webOS (5+) TV with the Homebrew Channel installed.</li>
+<li>A rooted LG webOS (4+) TV with the Homebrew Channel installed.</li>
 <li>Tested on: OLED65G45LW (EU), webOS TV 9.2.4, firmware 23.23.30.</li>
-<li>Reported working on webOS 5+.</li>
+<li>Compatibility tested on B9 webOS 4.10.2 and UR8050PSB webOS 10.2.2.</li>
 </ul>

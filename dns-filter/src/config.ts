@@ -15,6 +15,7 @@ export interface FilterConfig {
   statusFile?: string;
   timeoutMs: number;
   logBlocked: boolean;
+  localClientsOnly?: boolean;
   upstreamBindPort?: number;
   upstreamTcpPortStart?: number;
   upstreamTcpPortEnd?: number;
@@ -124,6 +125,7 @@ export function parseArgs(args: string[]): ParsedArgs {
   let statusFile: string | undefined;
   let timeoutMs = 5000;
   let logBlocked = false;
+  let localClientsOnly = false;
   let help = false;
   let check = false;
   let upstreamBindPort: number | undefined;
@@ -148,6 +150,11 @@ export function parseArgs(args: string[]): ParsedArgs {
 
     if (option === '--check') {
       check = true;
+      continue;
+    }
+
+    if (option === '--local-clients-only') {
+      localClientsOnly = true;
       continue;
     }
 
@@ -211,6 +218,9 @@ export function parseArgs(args: string[]): ParsedArgs {
   if (isIP(listenAddress) === 0) {
     throw new ConfigError('--listen-address must be an IPv4 or IPv6 address');
   }
+  if (listenAddress.slice(0, 4) !== '127.' && listenAddress !== '::1' && !localClientsOnly) {
+    throw new ConfigError('non-loopback listeners require --local-clients-only');
+  }
   if (upstreamText === undefined) {
     throw new ConfigError('--upstream is required');
   }
@@ -240,6 +250,7 @@ export function parseArgs(args: string[]): ParsedArgs {
       statusFile,
       timeoutMs,
       logBlocked,
+      localClientsOnly,
       upstreamBindPort,
       upstreamTcpPortStart,
       upstreamTcpPortEnd,
@@ -262,6 +273,7 @@ export function usage(): string {
     '  --status-file PATH       Publish acknowledged reload status atomically',
     '  --timeout MS             Upstream timeout (default: 5000)',
     '  --log-blocked            Log blocked domain names',
+    '  --local-clients-only     Accept only clients with an address assigned to this TV',
     '  --upstream-bind-port N   Pin the UDP upstream socket source port',
     '  --upstream-tcp-port-start N  Rotate the per-connection TCP upstream port',
     '  --upstream-tcp-port-end N    Last port in that rotation (defaults 15354:15483)',
