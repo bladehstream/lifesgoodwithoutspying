@@ -77,13 +77,34 @@
     consoleEl.addEventListener('focus', function () {
         scrollConsoleToBottom();
     });
+    // Older webOS engines (Chromium 53 and earlier) let an unreferenced
+    // PalmServiceBridge be collected while its call is in flight, and the reply
+    // is then never delivered. Hold each bridge until it answers.
+    var pendingBridges = {};
+    var nextBridgeId = 0;
+    // Default limit for one Luna call. Past it the UI unlocks instead of
+    // waiting forever.
+    var LUNA_TIMEOUT_MS = 90000;
+    // A failed call carries the service's reply as .data, so callers can tell
+    // an answer of returnValue:false apart from no answer at all (.timedOut).
+    function lunaError(message, data) {
+        var e = new Error(message);
+        e.data = data;
+        return e;
+    }
     // luna call, returns a promise that resolves to the parsed JSON result
-    function luna(url, params) {
-        return new Promise(function (resolve, reject) {
+    function luna(url, params, timeoutMs) {
+        var limit = timeoutMs || LUNA_TIMEOUT_MS;
+        var bridge = null;
+        var bridgeId = null;
+        var call = new Promise(function (resolve, reject) {
             var Bridge = window.PalmServiceBridge;
             if (typeof Bridge === 'function') {
-                var bridge = new Bridge();
+                bridge = new Bridge();
+                bridgeId = nextBridgeId++;
+                pendingBridges[bridgeId] = bridge;
                 bridge.onservicecallback = function (msg) {
+                    delete pendingBridges[bridgeId];
                     var data;
                     try {
                         data = JSON.parse(msg);
@@ -92,7 +113,7 @@
                         data = { raw: msg };
                     }
                     if (data && data.returnValue === false) {
-                        reject(new Error(data.errorText || 'Luna call failed'));
+                        reject(lunaError(data.errorText || 'Luna call failed', data));
                     }
                     else {
                         resolve(data);
@@ -102,6 +123,7 @@
                     bridge.call(url, JSON.stringify(params || {}));
                 }
                 catch (e) {
+                    delete pendingBridges[bridgeId];
                     reject(e);
                 }
                 return;
@@ -118,19 +140,74 @@
                     parameters: params || {},
                     onSuccess: function (r) { resolve(r); },
                     onFailure: function (e) {
-                        reject(new Error(e.errorText || 'Luna call failed'));
+                        reject(lunaError(e.errorText || 'Luna call failed', e));
                     }
                 });
                 return;
             }
             reject(new Error('No Luna bridge available (not running on webOS?)'));
         });
+        var timer = null;
+        var timeout = new Promise(function (_resolve, reject) {
+            timer = setTimeout(function () {
+                if (bridgeId !== null) {
+                    delete pendingBridges[bridgeId];
+                    try {
+                        if (bridge.cancel)
+                            bridge.cancel();
+                    }
+                    catch (_error) { }
+                }
+                var e = new Error('No reply from ' + url + ' after ' + (limit / 1000) + 's');
+                e.timedOut = true;
+                reject(e);
+            }, limit);
+        });
+        return Promise.race([call, timeout]).then(function (res) {
+            clearTimeout(timer);
+            return res;
+        }, function (e) {
+            clearTimeout(timer);
+            throw e;
+        });
     }
+    function delay(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
+    // The Homebrew Channel service quits after 30s without requests. A call
+    // that reaches it while it is quitting is never answered, and the next one
+    // fails with "Message status unknown" until the hub starts it again (seen
+    // on webOS 4.4). Retry those; a fresh call relaunches the service.
+    var HBC_ATTEMPT_MS = 20000;
+    var HBC_ATTEMPTS = 4;
+    function callLost(e) {
+        return !!e && (e.timedOut === true ||
+            /^(Message status unknown|Service does not exist)/.test(e.message));
+    }
+    function hbc(method, params, timeoutMs) {
+        var attempt = 0;
+        function once() {
+            attempt++;
+            return luna(HBC + '/' + method, params, timeoutMs || HBC_ATTEMPT_MS).catch(function (e) {
+                if (attempt < HBC_ATTEMPTS && callLost(e))
+                    return delay(1000).then(once);
+                throw e;
+            });
+        }
+        return once();
+    }
+    // Keep the service from idling out while the app is open, so a click does
+    // not land in the window where it is quitting.
+    var KEEPALIVE_MS = 20000;
+    setInterval(function () {
+        if (appIsActive())
+            luna(HBC + '/checkRoot', {}, HBC_ATTEMPT_MS).catch(function () { });
+    }, KEEPALIVE_MS);
     function shq(s) {
         return "'" + String(s).replace(/'/g, "'\\''") + "'";
     }
-    function exec(command, quiet) {
-        return luna(HBC + '/exec', { command: command }).then(function (res) {
+    function exec(command, quiet, timeoutMs) {
+        return hbc('exec', { command: command }, timeoutMs).then(function (res) {
             if (!quiet) {
                 var text = (res.stdoutString || '').trim();
                 if (text)
@@ -142,17 +219,59 @@
             return res;
         });
     }
+    // The folder of an installed app does not move while it runs.
+    var folderPath = null;
     function getFolder() {
-        return luna(HBC + '/getAppInfo', { id: APP_ID }).then(function (res) {
+        if (folderPath)
+            return Promise.resolve(folderPath);
+        return hbc('getAppInfo', { id: APP_ID }).then(function (res) {
             if (!res.appInfo || !res.appInfo.folderPath) {
                 throw new Error('Could not resolve app folder path');
             }
-            return res.appInfo.folderPath;
+            folderPath = res.appInfo.folderPath;
+            return folderPath;
         });
     }
-    function ctl(action, quiet) {
+    function ctl(action, quiet, timeoutMs) {
         return getFolder().then(function (dir) {
-            return exec('sh ' + shq(dir + '/init/nospy-ctl.sh') + ' ' + action, quiet);
+            return exec('sh ' + shq(dir + '/init/nospy-ctl.sh') + ' ' + action, quiet, timeoutMs);
+        });
+    }
+    var JOB_POLL_MS = 2000;
+    // Longer than the script's own cap on one job, which kills a stuck stage.
+    var JOB_WAIT_MS = 300000;
+    function showApplying() {
+        setText(document.getElementById('verdict'), 'verdict.applying');
+        setText(document.getElementById('explain'), 'explain.applying');
+    }
+    // enable, disable and apply start a background job on the TV and
+    // return at once. Wait for it, then print what it logged.
+    function waitForJob(deadline) {
+        return delay(JOB_POLL_MS).then(function () {
+            return ctl('status', true);
+        }).then(function (r) {
+            var map = parseStatus(r.stdoutString);
+            if (map.job === 'running') {
+                if (Date.now() > deadline)
+                    throw new Error('Still applying after ' + (JOB_WAIT_MS / 1000) + 's; see "Show log"');
+                return waitForJob(deadline);
+            }
+            return ctl('joblog').then(function () {
+                if (map.job === 'failed')
+                    throw new Error('The change reported a failure; see the log');
+            });
+        });
+    }
+    function job(command) {
+        showApplying();
+        return ctl(command).catch(function (e) {
+            // A retried call can find the job its lost first attempt started.
+            var stderr = e.data && e.data.stderrString;
+            if (stderr && stderr.indexOf('another change is still being applied') >= 0)
+                return null;
+            throw e;
+        }).then(function () {
+            return waitForJob(Date.now() + JOB_WAIT_MS);
         });
     }
     function parseStatus(text) {
@@ -225,7 +344,15 @@
         var explain = document.getElementById('explain');
         verdict.classList.remove('is-secure', 'is-warn', 'is-danger');
         appEl.classList.remove('secured', 'pending');
-        if (!isRoot) {
+        if (isRoot === null) {
+            // No answer is not the same as "not rooted": the Homebrew Channel
+            // service may be restarting.
+            setTag('tag.noAnswer', 'bad');
+            setText(verdict, 'verdict.noAnswer');
+            setText(explain, 'explain.noAnswer');
+            verdict.classList.add('is-warn');
+        }
+        else if (!isRoot) {
             setTag('tag.noRoot', 'bad');
             setText(verdict, 'verdict.noRoot');
             setText(explain, 'explain.noRoot');
@@ -233,7 +360,14 @@
         }
         else {
             setTag('tag.rooted', 'ok');
-            if (!enabled) {
+            if (map.job === 'running') {
+                // Left running by an earlier session of the app; the poll
+                // above picks up the result.
+                setText(verdict, 'verdict.applying');
+                setText(explain, 'explain.jobRunning');
+                verdict.classList.add('is-warn');
+            }
+            else if (!enabled) {
                 setText(verdict, 'verdict.off');
                 setText(explain, 'explain.off');
                 verdict.classList.add('is-danger');
@@ -289,7 +423,8 @@
     }
     function scheduleStatusPolling() {
         stopStatusPolling();
-        if (!appIsActive() || !lastStatus || lastStatus.hosts !== 'waiting')
+        if (!appIsActive() || !lastStatus ||
+            (lastStatus.hosts !== 'waiting' && lastStatus.job !== 'running'))
             return;
         statusPollTimer = setTimeout(function () {
             statusPollTimer = null;
@@ -300,8 +435,14 @@
     function refresh(options) {
         var quiet = !!(options && options.quiet);
         stopStatusPolling();
-        return luna(HBC + '/checkRoot', {}).then(function (res) {
-            var isRoot = !!res.returnValue;
+        return hbc('checkRoot', {}).then(function () {
+            return true;
+        }, function (e) {
+            // Only a plain returnValue:false answer means "not root".
+            if (e.data && e.data.returnValue === false && !e.data.errorText)
+                return false;
+            throw e;
+        }).then(function (isRoot) {
             if (!isRoot) {
                 lastStatus = null;
                 renderState({}, false);
@@ -320,7 +461,7 @@
             // refresh retains the existing error state and log behavior.
             if (!quiet) {
                 lastStatus = null;
-                renderState({}, false);
+                renderState({}, null);
                 log('status: ' + errmsg(e));
             }
             return null;
@@ -359,7 +500,12 @@
         return Promise.resolve()
             .then(fn)
             .then(then)
-            .catch(function (e) { log('! ' + errmsg(e)); showConsole(true); })
+            .catch(function (e) {
+                log('! ' + errmsg(e));
+                showConsole(true);
+                // A failed job may still have changed the TV; show what it left.
+                return refresh();
+            })
             .then(function () { busy(false); });
     }
     toggleButtons().forEach(function (btn) {
@@ -386,19 +532,19 @@
     });
     document.getElementById('btn-main').addEventListener('click', function () {
         if (!enabled) {
-            run('Enable protection', function () { return ctl('enable'); }, function () {
+            run('Enable protection', function () { return job('enable'); }, function () {
                 dirty = false;
                 return refresh();
             });
         }
         else if (dirty) {
-            run('Update protection', function () { return ctl('apply'); }, function () {
+            run('Update protection', function () { return job('apply'); }, function () {
                 dirty = false;
                 return refresh();
             });
         }
         else {
-            run('Disable protection', function () { return ctl('disable'); }, function () {
+            run('Disable protection', function () { return job('disable'); }, function () {
                 dirty = false;
                 return refresh();
             });
@@ -409,7 +555,8 @@
     });
     document.getElementById('btn-selftest').addEventListener('click', function () {
         showConsole(true);
-        run('Self-test', function () { return ctl('selftest'); });
+        // Its resolver and curl probes can take a while on a slow TV.
+        run('Self-test', function () { return ctl('selftest', false, LUNA_TIMEOUT_MS); });
     });
     document.getElementById('btn-refresh').addEventListener('click', function () {
         run('Refresh', refresh);

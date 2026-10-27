@@ -63,41 +63,78 @@ NAT_STARTED=0
 # BusyBox's timeout takes the duration as a bare SECS argument in 1.35 (webOS 9)
 # but only as "-t SECS" in 1.29 (webOS 5/6), and each rejects the other's form
 # outright. The wrong form exits 127 without ever running the command, so ask
-# this build which one it accepts instead of assuming. Probed once per process.
+# this build which one it accepts instead of assuming. Probed once per run: a
+# valid result inherited from the parent script is kept.
 # Duplicated from nospy-lib.sh so this script stays standalone.
-TIMEOUT_STYLE=""
+case "${TIMEOUT_STYLE:-}" in
+    bare|flag|none) ;;
+    *) TIMEOUT_STYLE="" ;;
+esac
 
 log() {
     echo "dns-filter: $*"
+}
+
+# Run one probe for at most 2 seconds. Under the Homebrew Channel's exec on
+# webOS 4.4 (BusyBox 1.24), timeout never starts its command and only returns
+# once its own limit kills it, so an unguarded probe costs 11 seconds.
+probe_quick() {
+    "$@" </dev/null >/dev/null 2>&1 &
+    p_pid=$!
+    ( sleep 2; kill -KILL "$p_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+    p_dog=$!
+    wait "$p_pid"
+    p_rc=$?
+    kill "$p_dog" 2>/dev/null
+    wait "$p_dog" 2>/dev/null
+    return "$p_rc"
 }
 
 detect_timeout_style() {
     [ -n "$TIMEOUT_STYLE" ] && return 0
     if ! command -v timeout >/dev/null 2>&1; then
         TIMEOUT_STYLE=none
-    elif timeout 1 sh -c : >/dev/null 2>&1; then
+    elif probe_quick timeout 1 true; then
         TIMEOUT_STYLE=bare
-    elif timeout -t 1 sh -c : >/dev/null 2>&1; then
+    elif probe_quick timeout -t 1 true; then
         TIMEOUT_STYLE=flag
     else
         TIMEOUT_STYLE=none
     fi
+    # Child scripts of the same run (apply, the DNS handoff) skip the probe.
+    export TIMEOUT_STYLE
     if [ "$TIMEOUT_STYLE" = none ]; then
         # stderr, because callers read this through a command substitution.
-        log "no usable timeout on this build; running without a time limit" >&2
+        log "no usable timeout on this build; using a shell watchdog" >&2
     fi
     return 0
 }
 
-# Run a command with a timeout when one is usable, so one slow helper call
-# cannot stall an apply or a boot hook.
+# Run a command with a timeout, so one slow helper call cannot stall an apply
+# or a boot hook. Builds without a usable timeout applet (webOS 4.x) get a
+# shell watchdog whose stdio is detached, so a command substitution around
+# this call is not held open until it fires.
 bounded() {
     detect_timeout_style
     case "$TIMEOUT_STYLE" in
-        bare) timeout 10 "$@" ;;
-        flag) timeout -t 10 "$@" ;;
-        *) "$@" ;;
+        # SIGKILL: util-linux script (webOS 4.x) blocks SIGTERM.
+        bare) timeout -s KILL 10 "$@"; return $? ;;
+        flag) timeout -t 10 -s KILL "$@"; return $? ;;
     esac
+    "$@" &
+    b_pid=$!
+    (
+        sleep 10
+        kill -TERM "$b_pid" 2>/dev/null || exit 0
+        sleep 1
+        kill -KILL "$b_pid" 2>/dev/null
+    ) </dev/null >/dev/null 2>&1 &
+    b_dog=$!
+    wait "$b_pid"
+    b_rc=$?
+    kill "$b_dog" 2>/dev/null
+    wait "$b_dog" 2>/dev/null
+    return "$b_rc"
 }
 
 die() {

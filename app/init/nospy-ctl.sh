@@ -2,9 +2,12 @@
 # lifesgoodwithoutspying control helper.
 #
 # Usage:
-#   nospy-ctl.sh enable|disable|apply|purge|status|log
+#   nospy-ctl.sh enable|disable|apply|purge|status|log|joblog
 #   nospy-ctl.sh set <key> on|off   (saves only; run apply to use it)
 #   nospy-ctl.sh get <key>
+#
+# enable, disable and apply start a background job and return at once;
+# poll "status" for job=running|done|failed.
 
 INITD="/var/lib/webosbrew/init.d"
 LINK="$INITD/50-lifesgoodwithoutspying"
@@ -55,6 +58,80 @@ dns_filter_field() {
     dns_filter_status | sed -n "s/^$1=//p" | head -n 1
 }
 
+# Background jobs.
+#
+# enable, disable, apply and set used to run the whole apply inside the
+# Homebrew Channel exec call, so the UI waited on every child the apply
+# started. One blocking child (luna-send on webOS 4.x) then froze the app with
+# every button disabled. These now start a detached job and return at once; the
+# UI polls "status" for job=running|done|failed and reads "joblog" afterwards.
+JOB_STATE="/var/lib/webosbrew/lifesgoodwithoutspying.job"
+JOB_RESULT="/var/lib/webosbrew/lifesgoodwithoutspying.job-result"
+# Hard cap on one job. A stage that outlives it is killed, so the UI always
+# gets an answer instead of polling a job that never ends.
+JOB_LIMIT=240
+
+job_running() {
+    [ -f "$JOB_STATE" ] || return 1
+    read -r job_pid job_action < "$JOB_STATE"
+    [ -n "$job_pid" ] && kill -0 "$job_pid" 2>/dev/null
+}
+
+job_state() {
+    if job_running; then
+        echo running
+    elif [ -f "$JOB_RESULT" ]; then
+        read -r res_action res_rc < "$JOB_RESULT"
+        if [ "$res_rc" = 0 ]; then echo done; else echo failed; fi
+    else
+        echo idle
+    fi
+}
+
+job_start() {
+    if job_running; then
+        echo "another change is still being applied ($job_action)" >&2
+        exit 1
+    fi
+    mkdir -p "$(dirname "$JOB_STATE")"
+    rm -f "$JOB_RESULT"
+    # Trim now: the job holds the log open, so apply's own trim would split it.
+    log_trim "$LOG"
+    # Detach completely: no stdio may stay tied to the exec call's pipes, or
+    # the Homebrew Channel keeps waiting for them to close. No setsid: it forks
+    # when called from a process-group leader (an SSH shell), and $! would
+    # then name a pid that exits at once while the job is still running.
+    sh "$SELF" run-job "$1" </dev/null >>"$LOG" 2>&1 &
+    printf '%s %s\n' "$!" "$1" > "$JOB_STATE"
+    echo "job=started"
+}
+
+# The job body, run detached by job_start.
+job_body() {
+    case "$1" in
+        enable)
+            mkdir -p "$INITD"
+            chmod +x "$APPLY" "$REMOVE"
+            bounded_for "$JOB_LIMIT" "$APPLY"
+            rc=$?
+            ln -sf "$APPLY" "$LINK"
+            return "$rc"
+            ;;
+        disable)
+            rm -f "$LINK"
+            bounded_for "$JOB_LIMIT" "$REMOVE"
+            ;;
+        apply)
+            chmod +x "$APPLY"
+            bounded_for "$JOB_LIMIT" "$APPLY"
+            ;;
+        *)
+            echo "unknown job: $1"
+            return 2
+            ;;
+    esac
+}
+
 is_known_key() {
     conf_keys > "$TMP"
     found=1
@@ -68,21 +145,29 @@ is_known_key() {
 }
 
 case "$1" in
-    enable)
-        mkdir -p "$INITD"
-        chmod +x "$APPLY" "$REMOVE"
-        "$APPLY"
-        ln -sf "$APPLY" "$LINK"
-        echo "autostart=on"
+    enable|disable|apply)
+        job_start "$1"
         ;;
-    disable)
-        rm -f "$LINK"
-        "$REMOVE"
-        echo "autostart=off"
+    run-job)
+        # Outlive the SSH session it may have been started from.
+        trap '' HUP
+        echo "==== job: $2 $(date) ===="
+        job_body "$2"
+        rc=$?
+        echo "==== $2 finished rc=$rc ===="
+        printf '%s %s\n' "$2" "$rc" > "$JOB_RESULT"
+        if [ -f "$JOB_STATE" ]; then
+            read -r job_pid job_action < "$JOB_STATE"
+            [ "$job_pid" = "$$" ] && rm -f "$JOB_STATE"
+        fi
+        exit "$rc"
         ;;
-    apply)
-        chmod +x "$APPLY"
-        "$APPLY"
+    joblog)
+        # Everything since the newest job marker: the job plus the apply or
+        # remove output it produced.
+        if [ -f "$LOG" ]; then
+            awk '/^==== job: / { n = 0 } { buf[n++] = $0 } END { for (i = 0; i < n; i++) print buf[i] }' "$LOG"
+        fi
         ;;
     purge)
         purge_residue
@@ -121,6 +206,7 @@ case "$1" in
         else
             echo "autostart=off"
         fi
+        echo "job=$(job_state)"
         echo "hosts=$(hosts_state)"
         echo "blocklist=$(blocklist_count)"
         echo "dns_filter=$(dns_filter_runtime)"
@@ -264,7 +350,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "usage: $0 enable|disable|apply|purge|status|selftest|log|set <key> on|off|get <key>" >&2
+        echo "usage: $0 enable|disable|apply|purge|status|selftest|log|joblog|set <key> on|off|get <key>" >&2
         exit 2
         ;;
 esac

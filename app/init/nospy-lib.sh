@@ -50,6 +50,17 @@ conf_get() {
     conf_default "$key"
 }
 
+# Cut a log back to its last 200 lines once it passes 64 KiB. The file is
+# replaced, so call this before opening the log for writing: output from an
+# already-open descriptor would land in the discarded copy.
+log_trim() {
+    [ -f "$1" ] || return 0
+    size="$(wc -c < "$1" 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$size" ] && [ "$size" -gt 65536 ]; then
+        tail -n 200 "$1" > "$1.tmp" 2>/dev/null && mv "$1.tmp" "$1"
+    fi
+}
+
 # Exit 0 if the key is "on".
 is_on() {
     [ "$(conf_get "$1")" = "on" ]
@@ -170,31 +181,100 @@ hosts_state() {
 # BusyBox's timeout takes the duration as a bare SECS argument in 1.35 (webOS 9)
 # but only as "-t SECS" in 1.29 (webOS 5/6), and each rejects the other's form
 # outright. The wrong form exits 127 without ever running the command, so ask
-# this build which one it accepts instead of assuming. Probed once per process.
-TIMEOUT_STYLE=""
+# this build which one it accepts instead of assuming. Probed once per run: a
+# valid result inherited from the parent script is kept.
+case "${TIMEOUT_STYLE:-}" in
+    bare|flag|none) ;;
+    *) TIMEOUT_STYLE="" ;;
+esac
+
+# Run one probe for at most 2 seconds. Under the Homebrew Channel's exec on
+# webOS 4.4 (BusyBox 1.24), timeout never starts its command and only returns
+# once its own limit kills it, so an unguarded probe costs 11 seconds.
+probe_quick() {
+    "$@" </dev/null >/dev/null 2>&1 &
+    p_pid=$!
+    ( sleep 2; kill -KILL "$p_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+    p_dog=$!
+    wait "$p_pid"
+    p_rc=$?
+    kill "$p_dog" 2>/dev/null
+    wait "$p_dog" 2>/dev/null
+    return "$p_rc"
+}
 
 detect_timeout_style() {
     [ -n "$TIMEOUT_STYLE" ] && return 0
     if ! command -v timeout >/dev/null 2>&1; then
         TIMEOUT_STYLE=none
-    elif timeout 1 sh -c : >/dev/null 2>&1; then
+    elif probe_quick timeout 1 true; then
         TIMEOUT_STYLE=bare
-    elif timeout -t 1 sh -c : >/dev/null 2>&1; then
+    elif probe_quick timeout -t 1 true; then
         TIMEOUT_STYLE=flag
     else
         TIMEOUT_STYLE=none
     fi
+    # Child scripts of the same run (apply, the DNS handoff) skip the probe.
+    export TIMEOUT_STYLE
     return 0
 }
 
-# Run a command with a timeout when one is usable to avoid a hang blocking boot
-bounded() {
+# Run a command for at most SECS seconds. Builds without a usable timeout
+# applet (seen on webOS 4.x) get a shell watchdog instead, as an unbounded
+# luna-send there blocks the whole apply, and with it the app's UI.
+# The watchdog's stdio is detached so a caller reading this through a command
+# substitution is not held open until it fires.
+bounded_for() {
+    b_secs="$1"
+    shift
     detect_timeout_style
     case "$TIMEOUT_STYLE" in
-        bare) timeout 10 "$@" ;;
-        flag) timeout -t 10 "$@" ;;
-        *) "$@" ;;
+        # SIGKILL: util-linux script (webOS 4.x) blocks SIGTERM, and once its
+        # child has exited it can wait forever, so a TERM never stops it.
+        bare) timeout -s KILL "$b_secs" "$@"; return $? ;;
+        flag) timeout -t "$b_secs" -s KILL "$@"; return $? ;;
     esac
+    "$@" &
+    b_pid=$!
+    (
+        sleep "$b_secs"
+        kill -TERM "$b_pid" 2>/dev/null || exit 0
+        sleep 1
+        kill -KILL "$b_pid" 2>/dev/null
+    ) </dev/null >/dev/null 2>&1 &
+    b_dog=$!
+    wait "$b_pid"
+    b_rc=$?
+    kill "$b_dog" 2>/dev/null
+    wait "$b_dog" 2>/dev/null
+    return "$b_rc"
+}
+
+# Run a command with a timeout to avoid a hang blocking boot or the UI.
+bounded() {
+    bounded_for 10 "$@"
+}
+
+# Start or stop one service unit. webOS 5 and newer run systemd; webOS 4.x and
+# older run Upstart, whose jobs carry the same names without ".service". A unit
+# missing on a given build fails harmlessly. Upstart's stop waits for the job,
+# so it is bounded.
+unit_ctl() {
+    u_action="$1"
+    u_unit="$2"
+    if command -v systemctl >/dev/null 2>&1; then
+        # --no-block: these units take the full 90s stop/start timeout
+        # otherwise, which would stall the whole apply.
+        systemctl --no-block "$u_action" "$u_unit" >/dev/null 2>&1
+    elif command -v initctl >/dev/null 2>&1; then
+        bounded initctl "$u_action" "${u_unit%.service}" >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
+has_unit_manager() {
+    command -v systemctl >/dev/null 2>&1 || command -v initctl >/dev/null 2>&1
 }
 
 # Process targets.
@@ -421,16 +501,26 @@ clock_close_to() {
     [ "$diff" -ge -10 ] && [ "$diff" -le 10 ]
 }
 
-# Print the process id of a running app, or nothing. luna-send only emits
-# output when it has a tty, so run it under script(1). Both service spellings
+# Make one luna call and print its reply. luna-send answers directly on webOS
+# 4.x, so try that first; some builds only print on a tty, so an empty reply
+# is retried under script(1). util-linux script 2.28 (webOS 4.x) can hang
+# after its child exits, which is why it is only the fallback.
+luna_call() {
+    command -v luna-send >/dev/null 2>&1 || return 1
+    reply="$(bounded luna-send -n 1 -f "$1" "$2" </dev/null 2>/dev/null)"
+    if [ -z "$reply" ] && command -v script >/dev/null 2>&1; then
+        reply="$(bounded script -q -c "luna-send -n 1 -f $1 '$2'" \
+            /dev/null </dev/null 2>/dev/null)"
+    fi
+    [ -n "$reply" ] || return 1
+    printf '%s\n' "$reply"
+}
+
+# Print the process id of a running app, or nothing. Both service spellings
 # exist across webOS versions, so try each.
 app_pid() {
-    command -v luna-send >/dev/null 2>&1 || return 0
-    command -v script >/dev/null 2>&1 || return 0
     for svc in com.webos.applicationManager com.webos.service.applicationmanager; do
-        running="$(bounded script -q -c \
-            "luna-send -n 1 -f luna://$svc/running '{}'" \
-            /dev/null 2>/dev/null)" || continue
+        running="$(luna_call "luna://$svc/running" '{}')" || continue
         pid="$(printf '%s\n' "$running" | tr '{},' '\n' | awk -v id="$1" '
             index($0, "\"id\"") && index($0, id) { want = 1; next }
             want && index($0, "\"processid\"") { gsub(/[^0-9]/, ""); print; exit }')"
@@ -449,9 +539,7 @@ app_close() {
         pid="$(app_pid "$id")"
         [ -n "$pid" ] || continue
         for svc in com.webos.applicationManager com.webos.service.applicationmanager; do
-            bounded script -q -c \
-                "luna-send -n 1 -f luna://$svc/close '{\"processId\":\"$pid\"}'" \
-                /dev/null >/dev/null 2>&1
+            luna_call "luna://$svc/close" "{\"processId\":\"$pid\"}" >/dev/null
         done
         echo "[+] asked the application manager to close $id (pid $pid)"
     done
@@ -467,19 +555,19 @@ app_close() {
 
 # Start every unit we may have stopped. Safe when already running.
 units_restore() {
-    command -v systemctl >/dev/null 2>&1 || return 0
+    has_unit_manager || return 0
     { ads_units; voice_units; thinq_units; } | sort -u |
         while IFS= read -r unit; do
             [ -n "$unit" ] || continue
-            systemctl --no-block start "$unit" >/dev/null 2>&1
+            unit_ctl start "$unit"
         done
     return 0
 }
 
 # Restart the SSDP discovery daemon that apply_lan stops.
 ssdp_restore() {
-    command -v systemctl >/dev/null 2>&1 || return 0
-    if systemctl --no-block start ssdp-discovery-lgtv >/dev/null 2>&1; then
+    has_unit_manager || return 0
+    if unit_ctl start ssdp-discovery-lgtv; then
         echo "[+] restarted ssdp-discovery-lgtv"
     fi
 }
@@ -547,15 +635,7 @@ upnp_restore() {
     command -v luna-send >/dev/null 2>&1 || return 0
     # Already up: skip the luna round-trip, which can block for its timeout.
     upnp_running && return 0
-    if command -v script >/dev/null 2>&1; then
-        bounded script -q -c \
-            "luna-send -n 1 -f luna://com.webos.service.upnp/com/palm/luna/private/ping '{}'" \
-            /dev/null >/dev/null 2>&1
-    else
-        bounded luna-send -n 1 -f \
-            luna://com.webos.service.upnp/com/palm/luna/private/ping '{}' \
-            >/dev/null 2>&1
-    fi
+    luna_call luna://com.webos.service.upnp/com/palm/luna/private/ping '{}' >/dev/null
     echo "[+] asked com.webos.service.upnp to start upnpd"
 }
 
