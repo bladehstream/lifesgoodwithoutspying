@@ -234,7 +234,8 @@ bounded_for() {
         bare) timeout -s KILL "$b_secs" "$@"; return $? ;;
         flag) timeout -t "$b_secs" -s KILL "$@"; return $? ;;
     esac
-    "$@" &
+    # A background command gets /dev/null as stdin; hand it the caller's.
+    { "$@" <&3 3<&- & } 3<&0
     b_pid=$!
     (
         sleep "$b_secs"

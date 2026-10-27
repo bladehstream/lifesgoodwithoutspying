@@ -121,7 +121,8 @@ bounded() {
         bare) timeout -s KILL 10 "$@"; return $? ;;
         flag) timeout -t 10 -s KILL "$@"; return $? ;;
     esac
-    "$@" &
+    # A background command gets /dev/null as stdin; hand it the caller's.
+    { "$@" <&3 3<&- & } 3<&0
     b_pid=$!
     (
         sleep 10
@@ -225,8 +226,13 @@ configure_connman_bus() {
 # so a network name is never read as a flag, and take Ready as well as Online:
 # ConnMan stays at Ready whenever its online check fails, which says nothing
 # about whether the link works.
+#
+# connmanctl spins at full CPU and never answers when its stdin is at EOF,
+# which is what /dev/null gives it at boot (seen on webOS 4.4). A pty from
+# script(1) keeps it working; tr drops the pty's carriage returns.
 active_service_ids() {
-    connmanctl services 2>/dev/null |
+    bounded script -q -c "connmanctl services" /dev/null </dev/null 2>/dev/null |
+        tr -d '\r' |
         awk 'substr($0, 3, 1) ~ /[OR]/ { print $NF }'
 }
 
@@ -410,7 +416,7 @@ connman_config() {
         done
         printf '\nexit\n'
     } > "$command_file"
-    script -q -c connmanctl /dev/null < "$command_file" >/dev/null 2>&1
+    bounded script -q -c connmanctl /dev/null < "$command_file" >/dev/null 2>&1
     result=$?
     rm -f "$command_file"
     return "$result"
@@ -796,6 +802,9 @@ enable_handoff() {
     esac
     [ -f "$STATE_FILE" ] && die "handoff is already enabled; run disable first"
     require_command connmanctl
+    # ConnMan discovery reads service properties over busctl. webOS 4.x ships
+    # without it; fail now instead of retrying discovery for 30 seconds.
+    require_command busctl
     require_command iptables
     require_command ip
     require_command script
