@@ -340,6 +340,7 @@ export class DnsFilterProxy {
       return;
     }
 
+    if (!responseMatches(message, pending.query)) return;
     this.pendingUdp.delete(upstreamId);
     clearTimeout(pending.timer);
     const response = copyBuffer(message);
@@ -590,7 +591,8 @@ export class DnsFilterProxy {
         if (responseBuffer.length < length + 2) {
           return;
         }
-        if (responseBuffer.readUInt16BE(2) !== query.readUInt16BE(0)) {
+        if (length < 12 || !responseMatches(responseBuffer.slice(2, length + 2), query) ||
+            responseBuffer.readUInt16BE(2) !== query.readUInt16BE(0)) {
           finish(new Error('upstream TCP DNS response ID mismatch'));
           return;
         }
@@ -689,4 +691,15 @@ function asError(value: any): Error {
     return value;
   }
   return new Error(String(value));
+}
+
+function responseMatches(response: Buffer, query: Buffer): boolean {
+  if (response.length < 12 || (response.readUInt16BE(2) & 0x8000) === 0) return false;
+  const normalized = copyBuffer(response);
+  normalized.writeUInt16BE(response.readUInt16BE(2) & 0x7fff, 2);
+  const actual = parseDnsQuery(normalized);
+  const expected = parseDnsQuery(query);
+  return actual !== null && expected !== null &&
+    actual.questionCount === expected.questionCount && actual.name === expected.name &&
+    response.readUInt32BE(actual.questionEnd - 4) === query.readUInt32BE(expected.questionEnd - 4);
 }
