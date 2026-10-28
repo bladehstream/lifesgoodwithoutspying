@@ -407,9 +407,6 @@ apply_lan() {
     if command -v systemctl >/dev/null 2>&1; then
         systemctl --no-block stop ssdp-discovery-lgtv >/dev/null 2>&1 || true
     fi
-    if pkill -x -9 ssdp 2>/dev/null; then
-        echo "[+] killed ssdp"
-    fi
 }
 
 apply_purge() {

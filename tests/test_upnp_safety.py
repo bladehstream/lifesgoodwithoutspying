@@ -23,6 +23,17 @@ class UpnpSafety(unittest.TestCase):
         script = self.base/'test.sh'
         script.write_text(LIB + '\nUPNP_PROC_ROOT=' + str(self.proc) + '\n' + body + '\n')
         return subprocess.run(['sh',str(script)],capture_output=True,text=True,timeout=5)
+    def test_lan_stop_does_not_signal_unverified_ssdp_names(self):
+        binary=self.base/'upnpd';binary.write_text('#!/bin/sh\n# nospy-upnpd-stub\n')
+        source=(ROOT/'app/init/nospy-apply.sh').read_text()
+        fn=source[source.index('apply_lan() {'):source.index('apply_purge() {')].replace('/usr/sbin/upnpd',str(binary))
+        body="""
+is_on() { return 0; }; pgrep() { return 1; }; pkill() { echo UNEXPECTED_NAME_SIGNAL; }
+systemctl() { return 0; }
+""" + fn + "\napply_lan\n"
+        result=self.run_shell(body)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertNotIn('UNEXPECTED_NAME_SIGNAL',result.stdout)
     def test_only_verified_parent_and_children_are_signaled(self):
         result=self.run_shell('''
 pgrep() { [ "$1" = -P ] && printf '101\\n102\\n'; }
