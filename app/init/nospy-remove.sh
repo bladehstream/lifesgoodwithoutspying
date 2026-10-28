@@ -11,6 +11,7 @@ echo "==== remove $(date) ===="
 
 # A delayed worker must not modify the sink after protection is disabled.
 pending_hosts_cancel
+rm -f "$NTP_TOKEN"
 
 DNS_FILTER_INIT="$DIR/nospy-dns-filter.sh"
 DNS_FILTER_STATE="/var/lib/webosbrew/lifesgoodwithoutspying-dns-filter.state"

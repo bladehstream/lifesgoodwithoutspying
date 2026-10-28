@@ -70,6 +70,10 @@
             <span class="sw" aria-hidden="true"></span>
             <span class="layer-text"><b>LG SDP &amp; clock sync</b><small>Blocks SDP after a 60-second clock-sync grace period</small></span>
           </button>
+          <button class="layer" data-key="clock.ntp" role="switch" aria-checked="false">
+            <span class="sw" aria-hidden="true"></span>
+            <span class="layer-text"><b>Clock from NTP</b><small>Optional. Sets the time from pool.ntp.org, so SDP is blocked from boot with no grace period</small></span>
+          </button>
           <button class="layer" data-key="dns.filter" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
             <span class="layer-text"><b>Local DNS filter</b><small>Routes ConnMan IPv4 DNS through the local helper; IPv6 is a separate companion choice</small></span>

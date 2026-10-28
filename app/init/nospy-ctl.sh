@@ -205,6 +205,14 @@ case "$1" in
         else
             echo "  SDP clock block              disabled"
         fi
+        if is_on clock.ntp; then
+            if [ -f "$NTP_TOKEN" ]; then
+                echo "  NTP clock                    pending"
+            else
+                echo "  NTP clock                    on (see log for the last sync)"
+            fi
+        fi
+        echo "  Clock (UTC)                  $(date -u '+%Y-%m-%d %H:%M:%S')"
         echo
         echo "== local outbound check (curl; diagnostic only) =="
         # -4: this build's curl stalls on dual-stack dials to the sinkhole,

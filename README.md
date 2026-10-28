@@ -25,6 +25,8 @@ TVs: ad delivery, Automatic Content Recognition, and always-on voice capture.
 - Adds a separate LG Service Delivery Platform (SDP) category. Other domain
   blocks apply immediately, while SDP waits 60 seconds at boot so the TV can
   set its clock before those domains are added to the sink.
+- Optionally sets the clock from NTP (`pool.ntp.org`) instead, so SDP can be
+  blocked from boot.
 - Stops the on-TV ad, ACR and telemetry daemons (`admanager`, `livepick`,
   `acr2`, `nudge`, `rdxd`, `uploadd`, `sportsalarm`).
 - Stops the LG voice and NLP services (`voiceinput`, `voiceconductor`,
@@ -114,6 +116,13 @@ and the main button cycles Enable / Update / Disable.
   synchronization. Disabling this category blocks SDP immediately, but the TV
   can remain at its default `2023-01-01` date and apps such as YouTube may warn
   or fail until the clock is corrected.
+- **Clock from NTP** (`clock.ntp`, default off) sets the time from
+  `0-2.pool.ntp.org` with a small SNTP client run under the TV's Node, then
+  hands it to webOS through `com.webos.service.systemservice/time/setSystemTime`
+  (falling back to `date -s`). With it on, SDP is blocked as soon as protection
+  applies, with no grace period. At boot the network may not be up yet, so the
+  sync retries in the background for up to 10 minutes; the log records the
+  result. It needs `node` on the TV, and UDP port 123 out.
 - **QuickSet remote codes** use `www.ueiwsp.com` for periodic remote-control
   code lookup. This is kept in the separate `domains.quickset` category,
   which defaults off, so enabling ad blocking does not disable QuickSet by
