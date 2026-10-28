@@ -183,9 +183,14 @@ configure_connman_bus() {
     return 0
 }
 
+# connmanctl prints three flag columns before the name: favorite (*),
+# autoconnect (A) and state (O online, R ready). Match the state column only,
+# so a network name is never read as a flag, and take Ready as well as Online:
+# ConnMan stays at Ready whenever its online check fails, which says nothing
+# about whether the link works.
 active_service_ids() {
     connmanctl services 2>/dev/null |
-        awk '$1 ~ /O/ { print $NF }'
+        awk 'substr($0, 3, 1) ~ /[OR]/ { print $NF }'
 }
 
 connman_unique_name() {
