@@ -308,6 +308,7 @@
             return ctl('status', quiet).then(function (r) {
                 var map = parseStatus(r.stdoutString);
                 lastStatus = map;
+                dirty = map.changes === 'pending';
                 renderToggles(map);
                 renderState(map, true);
                 return null;
@@ -365,12 +366,19 @@
             if (!key)
                 return;
             var next = btn.classList.contains('on') ? 'off' : 'on';
+            // set only saves the key; "Update protection" (or Enable) applies
+            // every change at once. A status call costs seconds, so update the
+            // view from the last known state instead.
             run(key + ' = ' + next, function () {
-                return ctl('set ' + key + ' ' + next);
+                return ctl('set ' + key + ' ' + next, true);
             }, function () {
                 if (enabled)
                     dirty = true;
-                return refresh();
+                if (!lastStatus)
+                    return refresh();
+                lastStatus[key] = next;
+                renderToggles(lastStatus);
+                renderState(lastStatus, true);
             });
         });
     });

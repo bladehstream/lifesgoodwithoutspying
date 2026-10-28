@@ -3,7 +3,7 @@
 #
 # Usage:
 #   nospy-ctl.sh enable|disable|apply|purge|status|log
-#   nospy-ctl.sh set <key> on|off
+#   nospy-ctl.sh set <key> on|off   (saves only; run apply to use it)
 #   nospy-ctl.sh get <key>
 
 INITD="/var/lib/webosbrew/init.d"
@@ -98,11 +98,11 @@ case "$1" in
             on|off) ;;
             *) echo "value must be on or off" >&2; exit 2 ;;
         esac
+        # Only save the setting. A full apply takes 10-20 seconds, so the UI
+        # collects changes and applies them once ("Update protection"); run
+        # apply yourself after setting keys over SSH.
         conf_set "$key" "$val"
         echo "$key=$val"
-        # Re-apply so the change takes effect immediately.
-        chmod +x "$APPLY"
-        "$APPLY"
         ;;
     get)
         conf_get "$2"
@@ -110,6 +110,14 @@ case "$1" in
     status)
         if [ -L "$LINK" ]; then
             echo "autostart=on"
+            # Settings saved since the last apply.
+            if [ ! -f "$CONF_APPLIED" ]; then
+                echo "changes=pending"
+            elif [ "$(conf_effective "$CONF")" = "$(conf_effective "$CONF_APPLIED")" ]; then
+                echo "changes=none"
+            else
+                echo "changes=pending"
+            fi
         else
             echo "autostart=off"
         fi

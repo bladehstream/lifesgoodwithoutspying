@@ -2,6 +2,7 @@
 # lifesgoodwithoutspying shared helpers
 
 CONF="/var/lib/webosbrew/lifesgoodwithoutspying.conf"
+CONF_APPLIED="/var/lib/webosbrew/lifesgoodwithoutspying.conf-applied"
 HOSTS_GEN="/var/lib/webosbrew/lifesgoodwithoutspying.hosts"
 HOSTS_PENDING="/var/lib/webosbrew/lifesgoodwithoutspying.hosts-pending"
 DNS_BLOCKLIST="/var/lib/webosbrew/lifesgoodwithoutspying.dns"
@@ -52,6 +53,16 @@ conf_get() {
 # Exit 0 if the key is "on".
 is_on() {
     [ "$(conf_get "$1")" = "on" ]
+}
+
+# Print every key with the value it has in the given settings file (default
+# when unset), so two files can be compared by what they mean.
+conf_effective() {
+    for key in $(conf_keys); do
+        v="$(grep "^$key=" "$1" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
+        [ -n "$v" ] || v="$(conf_default "$key")"
+        echo "$key=$v"
+    done
 }
 
 # Persist a key=value pair.
