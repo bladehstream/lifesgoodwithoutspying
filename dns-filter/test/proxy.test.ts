@@ -440,4 +440,26 @@ describe('DnsFilterProxy', () => {
       expect(reply.readUInt16BE(2) & 15).toBe(0);
     } finally { await stopProxy(proxy); await closeServer(upstream.server); }
   });
+  it('ignores UDP replies from an unexpected source even with the right ID', async () => {
+    const upstream = await listenSilentUpstream();
+    const forger = dgram.createSocket('udp4');
+    const proxy = new DnsFilterProxy({
+      listenAddress: '127.0.0.1', listenPort: 0,
+      upstream: {host: '127.0.0.1', port: upstream.port},
+      blocklistPath: 'unused', blocklistFormat: 'domains', timeoutMs: 200, logBlocked: false,
+    }, new Blocklist([]));
+    upstream.socket.on('message', (query, remote) => {
+      const response = Buffer.from(query); response.writeUInt16BE(0x8180, 2);
+      forger.send(response, remote.port, remote.address);
+    });
+    const client = dgram.createSocket('udp4');
+    try {
+      await startProxy(proxy);
+      const reply = await sendQuery(client, proxy.getListenPort(), queryFor('forge.example.test', 43));
+      expect(reply.readUInt16BE(2) & 15).toBe(2);
+    } finally {
+      await stopProxy(proxy); await closeSocket(client);
+      await closeSocket(forger); await closeSocket(upstream.socket);
+    }
+  });
 });

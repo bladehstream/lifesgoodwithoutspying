@@ -191,7 +191,7 @@ export class DnsFilterProxy {
     this.udp.on('message', (message: Buffer, remote: any) => {
       this.handleUdpMessage(message, remote);
     });
-    this.upstreamUdp.on('message', (message: Buffer) => this.handleUpstreamUdp(message));
+    this.upstreamUdp.on('message', (message: Buffer, remote: any) => this.handleUpstreamUdp(message, remote));
     this.udp.on('error', (error: Error) => {
       if (this.started) {
         this.reportError(error);
@@ -328,7 +328,8 @@ export class DnsFilterProxy {
     this.sendUdp(response, client.port, client.address);
   }
 
-  private handleUpstreamUdp(message: Buffer): void {
+  private handleUpstreamUdp(message: Buffer, remote: any): void {
+    if (remote.address !== this.upstreamAddress || remote.port !== this.config.upstream.port) return;
     if (message.length < 12 || (message.readUInt16BE(2) & 0x8000) === 0) {
       return;
     }
