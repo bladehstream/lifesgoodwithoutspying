@@ -1,7 +1,81 @@
-# LG Content Store / app recommendations. Toggle: domains.lgrecommends
-# Split out of domains.dashboard: blocking these can break the LG Content
-# Store (error 202, #16), so this category defaults off.
-# Regional and macro-region hosts (verified resolving 2026-09-16)
+# LG Content Store: its interface and app recommendations. Toggle:
+# domains.lgrecommends. Blocking any of these stops the store opening (error
+# 202 or -102, #16), so this category defaults off.
+# The store loads its interface from <region>.app.lgwebostv.com; these hosts
+# used to sit in 40-telemetry.txt.
+app.lgwebostv.com
+gb.app.lgwebostv.com
+ae.app.lgwebostv.com
+ar.app.lgwebostv.com
+at.app.lgwebostv.com
+au.app.lgwebostv.com
+bd.app.lgwebostv.com
+be.app.lgwebostv.com
+bg.app.lgwebostv.com
+br.app.lgwebostv.com
+by.app.lgwebostv.com
+ca.app.lgwebostv.com
+ch.app.lgwebostv.com
+cl.app.lgwebostv.com
+cn.app.lgwebostv.com
+co.app.lgwebostv.com
+cy.app.lgwebostv.com
+cz.app.lgwebostv.com
+de.app.lgwebostv.com
+dk.app.lgwebostv.com
+ee.app.lgwebostv.com
+eg.app.lgwebostv.com
+es.app.lgwebostv.com
+fi.app.lgwebostv.com
+fr.app.lgwebostv.com
+gr.app.lgwebostv.com
+hk.app.lgwebostv.com
+hr.app.lgwebostv.com
+hu.app.lgwebostv.com
+id.app.lgwebostv.com
+ie.app.lgwebostv.com
+il.app.lgwebostv.com
+in.app.lgwebostv.com
+is.app.lgwebostv.com
+it.app.lgwebostv.com
+jp.app.lgwebostv.com
+ke.app.lgwebostv.com
+kr.app.lgwebostv.com
+kw.app.lgwebostv.com
+kz.app.lgwebostv.com
+lk.app.lgwebostv.com
+lt.app.lgwebostv.com
+lu.app.lgwebostv.com
+lv.app.lgwebostv.com
+mt.app.lgwebostv.com
+mx.app.lgwebostv.com
+my.app.lgwebostv.com
+ng.app.lgwebostv.com
+nl.app.lgwebostv.com
+no.app.lgwebostv.com
+nz.app.lgwebostv.com
+pe.app.lgwebostv.com
+ph.app.lgwebostv.com
+pk.app.lgwebostv.com
+pl.app.lgwebostv.com
+pt.app.lgwebostv.com
+qa.app.lgwebostv.com
+ro.app.lgwebostv.com
+rs.app.lgwebostv.com
+ru.app.lgwebostv.com
+sa.app.lgwebostv.com
+se.app.lgwebostv.com
+sg.app.lgwebostv.com
+si.app.lgwebostv.com
+sk.app.lgwebostv.com
+th.app.lgwebostv.com
+tr.app.lgwebostv.com
+tw.app.lgwebostv.com
+ua.app.lgwebostv.com
+us.app.lgwebostv.com
+vn.app.lgwebostv.com
+za.app.lgwebostv.com
+# App recommendations (verified resolving 2026-09-16)
 lgrecommends.lgappstv.com
 gb.lgrecommends.lgappstv.com
 ae.lgrecommends.lgappstv.com
