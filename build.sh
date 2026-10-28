@@ -52,16 +52,20 @@ done
 echo "DNS filter bundle included"
 
 # run-parts only runs executable files; make sure the hooks carry the bit.
-chmod +x app/init/nospy-*
+chmod 755 app/init/nospy-*.sh app/init/nospy-upnpd-stub
+chmod 644 app/init/nospy-dns-filter.js app/init/blocklist.d/*.txt
 
-rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-ares-package -o "$OUT_DIR" app
+ares-package --no-minify -o "$OUT_DIR" app
+package_id="$(node -p "JSON.parse(require('fs').readFileSync('app/appinfo.json')).id")"
+package_version="$(node -p "JSON.parse(require('fs').readFileSync('app/appinfo.json')).version")"
+package="$OUT_DIR/${package_id}_${package_version}_all.ipk"
+python3 scripts/verify-package.py --normalize "$package"
 
 echo
 echo "Built:"
-ls -1 "$OUT_DIR"/*.ipk
+ls -1 "$package"
 echo
 echo "sha256 (needed for the Homebrew Channel remote install):"
-shasum -a 256 "$OUT_DIR"/*.ipk 2>/dev/null || sha256sum "$OUT_DIR"/*.ipk
+shasum -a 256 "$package" 2>/dev/null || sha256sum "$package"

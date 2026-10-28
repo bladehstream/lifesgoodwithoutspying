@@ -35,6 +35,9 @@ jobs:
       - name: Build IPK
         run: ./build.sh
 
+      - name: Package verification regressions
+        run: python3 -m unittest discover -s tests -v
+
       # Run the DNS filter bundle under the Node releases the TVs ship:
       # 0.12 on webOS 3.x and 8.12 on webOS 4-6.
       - name: DNS filter smoke tests on TV Node versions

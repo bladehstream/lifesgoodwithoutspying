@@ -66,6 +66,9 @@ filter bundle.
 ```
 
 Builds an `.ipk` plus its sha256 into `dist/`.
+The build also requires Python 3 and `ar` to normalize package permissions and
+verify the packaged application against its source. Existing files in the output
+directory are retained; the package for the current version is replaced.
 
 ## Optional DNS filter
 
