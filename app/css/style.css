@@ -25,7 +25,8 @@ html, body {
 
 .app {
   height: 100%;
-  padding: 3vh 3.6vw;
+  /* Less padding at the bottom, where the toggle grid needs the room. */
+  padding: 3vh 3.6vw 1.5vh;
   display: grid;
   grid-template-rows: auto auto auto 1fr;
   gap: 2.2vh;
