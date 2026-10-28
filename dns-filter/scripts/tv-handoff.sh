@@ -303,10 +303,15 @@ discover_service_snapshot() {
     }
 
     state="$(printf '%s\n' "$props" | connman_property '' State '')"
-    if [ "$state" != "online" ]; then
-        snapshot_fail "active ConnMan service is not online" 1
-        return 1
-    fi
+    # Ready is as usable as Online; ConnMan only stays at Ready because its
+    # online check failed.
+    case "$state" in
+        online|ready) ;;
+        *)
+            snapshot_fail "active ConnMan service is not connected ($state)" 1
+            return 1
+            ;;
+    esac
     INTERFACE="$(printf '%s\n' "$props" | connman_property Ethernet Interface IPv4)"
     LISTEN_ADDRESS="$(printf '%s\n' "$props" | connman_property IPv4 Address IPv6)"
     [ -n "$INTERFACE" ] || {
