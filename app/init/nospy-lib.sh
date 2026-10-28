@@ -447,21 +447,56 @@ ssdp_restore() {
 # for the stub that is the script name "upnpd", the same as the real binary.
 # The exe link is what tells the two apart.
 upnp_running() {
-    for pid in $(pgrep upnpd 2>/dev/null); do
-        case "$(readlink "/proc/$pid/exe" 2>/dev/null)" in
-            */upnpd) return 0 ;;
-        esac
+    for pid in $(pgrep -x upnpd 2>/dev/null); do
+        upnp_real_pid_owned "$pid" && return 0
     done
     return 1
 }
 
-# Kill a pid and its direct children. The upnpd stub is a shell script whose
-# child is a very long sleep; killing only the shell would orphan the sleep.
-kill_with_children() {
-    for child in $(pgrep -P "$1" 2>/dev/null); do
-        kill -9 "$child" 2>/dev/null
+# Only these exact process identities were observed on the supported TVs.
+UPNP_PROC_ROOT=/proc
+upnp_real_pid_owned() {
+    case "$1" in ''|*[!0-9]*|0|1) return 1 ;; esac
+    [ "$(readlink "$UPNP_PROC_ROOT/$1/exe" 2>/dev/null)" = /usr/sbin/upnpd ]
+}
+
+upnp_stub_pid_owned() {
+    case "$1" in ''|*[!0-9]*|0|1) return 1 ;; esac
+    [ "$UPNP_PROC_ROOT/$1/exe" -ef /bin/sh ] || return 1
+    tr '\000' '\n' < "$UPNP_PROC_ROOT/$1/cmdline" 2>/dev/null | awk '
+        NR==1 {if ($0 != "/bin/sh") exit 1}
+        NR==2 {if ($0 != "/usr/sbin/upnpd") exit 1}
+        END {if (NR != 2) exit 1}'
+}
+
+upnp_stub_sleep_owned() {
+    stub_parent="$1"; stub_child="$2"
+    case "$stub_child" in ''|*[!0-9]*|0|1) return 1 ;; esac
+    [ "$UPNP_PROC_ROOT/$stub_child/exe" -ef /bin/sleep ] || return 1
+    [ "$(awk '$1 == "PPid:" {print $2}' "$UPNP_PROC_ROOT/$stub_child/status" 2>/dev/null)" = "$stub_parent" ] || return 1
+    tr '\000' '\n' < "$UPNP_PROC_ROOT/$stub_child/cmdline" 2>/dev/null | awk '
+        NR==1 {if ($0 != "sleep") exit 1}
+        NR==2 {if ($0 != "2147483647") exit 1}
+        END {if (NR != 2) exit 1}'
+}
+
+upnp_stop_owned_stub() {
+    stub_pid="$1"
+    upnp_stub_pid_owned "$stub_pid" || return 1
+    stub_children="$(pgrep -P "$stub_pid" 2>/dev/null || true)"
+    for stub_child in $stub_children; do
+        upnp_stub_sleep_owned "$stub_pid" "$stub_child" || return 1
     done
-    kill -9 "$1" 2>/dev/null
+    for stub_child in $stub_children; do
+        upnp_stub_pid_owned "$stub_pid" && upnp_stub_sleep_owned "$stub_pid" "$stub_child" || return 1
+        if ! kill -9 "$stub_child" 2>/dev/null; then
+            kill -0 "$stub_child" 2>/dev/null && return 1
+        fi
+    done
+    if upnp_stub_pid_owned "$stub_pid" && ! kill -9 "$stub_pid" 2>/dev/null; then
+        kill -0 "$stub_pid" 2>/dev/null && return 1
+    fi
+    return 0
 }
 
 # Undo the upnpd stub: unmount it, then kill the stub shells the unmount leaves
@@ -470,9 +505,13 @@ kill_with_children() {
 # healthy real upnpd alive.
 #
 # Returns 0 if it unstubbed something, 1 if there was nothing to do.
+upnp_stub_active() {
+    head -n 2 /usr/sbin/upnpd 2>/dev/null | grep -q 'nospy-upnpd-stub'
+}
+
 upnp_unstub() {
     changed=0
-    if head -n 2 /usr/sbin/upnpd 2>/dev/null | grep -q 'nospy-upnpd-stub'; then
+    if upnp_stub_active; then
         if umount /usr/sbin/upnpd 2>/dev/null || umount -l /usr/sbin/upnpd 2>/dev/null; then
             echo "[+] restored /usr/sbin/upnpd"
             changed=1
@@ -483,13 +522,21 @@ upnp_unstub() {
             return 1
         fi
     fi
-    for pid in $(pgrep upnpd 2>/dev/null); do
-        case "$(readlink "/proc/$pid/exe" 2>/dev/null)" in
-            */upnpd) ;; # real daemon, leave it alone
-            *) kill_with_children "$pid"
-               echo "[+] killed lingering upnpd stub ($pid)"
-               changed=1 ;;
-        esac
+    for pid in $(pgrep -x upnpd 2>/dev/null); do
+        upnp_real_pid_owned "$pid" && continue
+        if ! upnp_stub_pid_owned "$pid"; then
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "[-] cannot verify upnpd process $pid; leaving it untouched" >&2
+                return 2
+            fi
+            continue
+        fi
+        if ! upnp_stop_owned_stub "$pid"; then
+            echo "[-] upnpd stub has an unverified child; leaving it untouched" >&2
+            return 2
+        fi
+        echo "[+] stopped verified upnpd stub ($pid)"
+        changed=1
     done
     if [ "$changed" -eq 1 ]; then
         sleep 1
@@ -521,7 +568,10 @@ upnp_restore() {
 # first, then let the units come back up.
 services_restore() {
     stub_clear_all
-    upnp_unstub
+    upnp_rc=0
+    upnp_unstub || upnp_rc=$?
+    [ "$upnp_rc" != 2 ] || return 1
+    upnp_stub_active && return 1
     units_restore
     ssdp_restore
     upnp_restore

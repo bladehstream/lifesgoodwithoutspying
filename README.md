@@ -37,6 +37,8 @@ TVs: ad delivery, Automatic Content Recognition, and always-on voice capture.
   back, rather than leaving them down until a reboot.
 - Optionally swaps `/usr/sbin/upnpd` for an inert stub, killing UPnP
   discovery both ways (breaks casting to the TV too).
+- UPnP cleanup verifies the stub's executable, arguments and child identity;
+  unrecognized processes are left alone and reported.
 - Wipes locally buffered ACR / speech-to-text files.
 - Re-applies everything at boot through a Homebrew Channel `init.d` hook.
 - Optional local DNS filtering routes ConnMan's IPv4 resolver through a
