@@ -16,6 +16,7 @@ conf_default() {
         domains.smartad)    echo on ;;
         domains.quickset)   echo off ;;
         domains.dashboard)  echo on ;;
+        domains.lgrecommends) echo off ;;
         domains.wiselg)     echo off ;;
         domains.telemetry)  echo on ;;
         domains.sdp)        echo on ;;
@@ -68,7 +69,7 @@ conf_set() {
 # Newline-separated list of every toggleable key.
 conf_keys() {
     printf '%s\n' \
-        domains.acr domains.smartad domains.quickset domains.dashboard \
+        domains.acr domains.smartad domains.quickset domains.dashboard domains.lgrecommends \
         domains.telemetry domains.sdp clock.ntp domains.lgchannels domains.updates \
         domains.thinq domains.wiselg dns.filter dns.disable_ipv6 voice.stop ads.stop lan.block purge.boot
 }
@@ -76,7 +77,7 @@ conf_keys() {
 # Newline-separated list of domain category keys.
 domain_keys() {
     printf '%s\n' \
-        domains.smartad domains.quickset domains.acr domains.dashboard \
+        domains.smartad domains.quickset domains.acr domains.dashboard domains.lgrecommends \
         domains.telemetry domains.sdp domains.lgchannels domains.updates \
         domains.thinq domains.wiselg
 }
@@ -88,6 +89,7 @@ cat_file_for_key() {
         domains.quickset)   echo "15-quickset.txt" ;;
         domains.acr)        echo "20-acr.txt" ;;
         domains.dashboard)  echo "30-dashboard.txt" ;;
+        domains.lgrecommends) echo "32-lgrecommends.txt" ;;
         domains.wiselg)     echo "35-wiselg.txt" ;;
         domains.telemetry)  echo "40-telemetry.txt" ;;
         domains.sdp)        echo "45-sdp.txt" ;;

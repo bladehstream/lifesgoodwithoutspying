@@ -20,8 +20,8 @@ TVs: ad delivery, Automatic Content Recognition, and always-on voice capture.
 
 - Blackholes LG ad / ACR / telemetry domains to loopback by bind-mounting a
   generated `/etc/hosts` (per-category toggles, including separate
-  crash/diagnostic, QuickSet, and optional ThinQ / companion and Home
-  app-session lists).
+  crash/diagnostic, QuickSet, and optional ThinQ / companion, Home
+  app-session and app store recommendation lists).
 - Adds a separate LG Service Delivery Platform (SDP) category. Other domain
   blocks apply immediately, while SDP waits 60 seconds at boot so the TV can
   set its clock before those domains are added to the sink.
@@ -133,6 +133,10 @@ and the main button cycles Enable / Update / Disable.
   hosts, which upload app-session records (app IDs, user number, start/end
   times). The same hosts serve Home recommendations, previews, sports and
   channel-map metadata, so the category defaults off.
+- **App store recommendations** (`domains.lgrecommends`) blocks the regional
+  `*.lgrecommends.lgappstv.com` hosts. These used to be part of the Home
+  dashboard category, but blocking them can stop the LG Content Store from
+  opening (error 202), so they have their own category, which defaults off.
 - **The domain sink is host-based.** The self-test's `getent` and `curl`
   checks only prove that the generated `/etc/hosts` is visible to commands
   using the local resolver. Some webOS services use their own DNS path,
