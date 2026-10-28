@@ -186,7 +186,8 @@ html, body {
 .explain {
   grid-area: explain;
   margin: 0;
-  max-width: 46ch;
+  /* No width cap: each message fits on one line of the left column, so the
+     hero keeps its height and the toggle grid below stays on screen. */
   color: #8FA0A6;
   font-size: 1.9vh;
   line-height: 1.35;
