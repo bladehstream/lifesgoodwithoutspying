@@ -275,6 +275,14 @@ apply_dns_filter() {
         # Reconfigure the complete handoff when either companion setting changes.
         # The nameserver is always part of the handoff; only IPv6 is optional.
         if [ -f "$DNS_FILTER_STATE" ]; then
+            # Same IPv6 mode as the running handoff: only the blocklist can have
+            # changed, and the helper reloads that in place. Restarting the
+            # handoff costs several seconds, so do that only when the reload
+            # fails (e.g. the helper is not running after a reboot).
+            if [ "$(sed -n 's/^IPV6_MODE=//p' "$DNS_FILTER_STATE")" = "$(dns_filter_ipv6_mode)" ] &&
+                "$DNS_FILTER_INIT" reload 2>/dev/null; then
+                return 0
+            fi
             "$DNS_FILTER_INIT" disable || return 1
         fi
         NOSPY_DNS_IPV6_MODE="$(dns_filter_ipv6_mode)" "$DNS_FILTER_INIT" enable
