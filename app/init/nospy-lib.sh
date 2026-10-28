@@ -8,6 +8,8 @@ DNS_BLOCKLIST="/var/lib/webosbrew/lifesgoodwithoutspying.dns"
 CLOCK_SYNC_DELAY=60
 # Token of the current NTP clock worker; removing it stops the worker.
 NTP_TOKEN="/tmp/lifesgoodwithoutspying.ntp"
+# Token of the worker that starts the DNS filter once the network is up.
+DNS_RETRY_TOKEN="/tmp/lifesgoodwithoutspying.dns-retry"
 
 # Defaults
 conf_default() {
