@@ -6,6 +6,8 @@ HOSTS_GEN="/var/lib/webosbrew/lifesgoodwithoutspying.hosts"
 HOSTS_PENDING="/var/lib/webosbrew/lifesgoodwithoutspying.hosts-pending"
 DNS_BLOCKLIST="/var/lib/webosbrew/lifesgoodwithoutspying.dns"
 CLOCK_SYNC_DELAY=60
+# Token of the current NTP clock worker; removing it stops the worker.
+NTP_TOKEN="/tmp/lifesgoodwithoutspying.ntp"
 
 # Defaults
 conf_default() {
@@ -18,6 +20,7 @@ conf_default() {
         domains.wiselg)     echo off ;;
         domains.telemetry)  echo on ;;
         domains.sdp)        echo on ;;
+        clock.ntp)          echo off ;;
         domains.lgchannels) echo off ;;
         domains.updates)    echo off ;;
         domains.thinq)      echo off ;;
@@ -67,7 +70,7 @@ conf_set() {
 conf_keys() {
     printf '%s\n' \
         domains.acr domains.smartad domains.quickset domains.dashboard domains.lgrecommends \
-        domains.telemetry domains.sdp domains.lgchannels domains.updates \
+        domains.telemetry domains.sdp clock.ntp domains.lgchannels domains.updates \
         domains.thinq domains.wiselg dns.filter dns.disable_ipv6 voice.stop ads.stop lan.block purge.boot
 }
 
@@ -379,6 +382,30 @@ purge_residue() {
     else
         echo "[~] no ACR/voice residue found"
     fi
+}
+
+# Set the clock to a Unix time in seconds. Ask the system service first, so
+# webOS knows the time changed; fall back to setting the kernel clock directly.
+# On webOS 9 with network time on, setSystemTime answers returnValue:true but
+# leaves the clock alone, so the date fallback is what takes effect there.
+# Succeeds only if the clock ends up within 10 seconds of the target.
+set_clock() {
+    target="$1"
+    if command -v luna-send >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
+        bounded script -q -c \
+            "luna-send -n 1 -f luna://com.webos.service.systemservice/time/setSystemTime '{\"utc\":$target}'" \
+            /dev/null >/dev/null 2>&1
+        clock_close_to "$target" && { echo luna; return 0; }
+    fi
+    date -u -s "@$target" >/dev/null 2>&1
+    clock_close_to "$target" && { echo date; return 0; }
+    return 1
+}
+
+clock_close_to() {
+    now="$(date +%s)"
+    diff=$((now - $1))
+    [ "$diff" -ge -10 ] && [ "$diff" -le 10 ]
 }
 
 # Print the process id of a running app, or nothing. luna-send only emits

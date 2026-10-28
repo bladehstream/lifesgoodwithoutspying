@@ -53,9 +53,10 @@ collect_domains() {
     domain_keys > "$KEYS_TMP"
     while IFS= read -r key; do
         if [ "$key" = domains.sdp ] && [ "$mode" = initial ]; then
-            # Enabled SDP is held back for the grace period; disabled SDP
-            # must not contribute domains to the initial sink either.
-            continue
+            # Disabled SDP never contributes domains. Enabled SDP is held back
+            # for the grace period, unless the NTP clock is on: then SDP is not
+            # needed for the time, so it is blocked immediately.
+            is_on "$key" && is_on clock.ntp || continue
         else
             is_on "$key" || continue
         fi
@@ -210,7 +211,7 @@ apply_hosts() {
     count="$(grep -c . "$DOMAINS_TMP" 2>/dev/null)"
     [ -n "$count" ] || count=0
     sdp_pending=0
-    is_on domains.sdp && sdp_pending=1
+    is_on domains.sdp && ! is_on clock.ntp && sdp_pending=1
     generation="$(date +%s)-$$"
 
     if [ "$count" -eq 0 ] && [ "$sdp_pending" -eq 0 ]; then
@@ -403,6 +404,48 @@ apply_lan() {
     fi
 }
 
+# Set the clock from NTP instead of LG's SDP X-Server-Time header. At boot the
+# network may not be up yet, so retry in the background for up to 10 minutes.
+# A newer apply or a disable replaces or removes the token, which stops this
+# worker.
+apply_clock() {
+    if ! is_on clock.ntp; then
+        rm -f "$NTP_TOKEN"
+        return 0
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        echo "[-] NTP clock needs node, which this TV lacks; clock left alone"
+        return 0
+    fi
+    token="$(date +%s)-$$"
+    echo "$token" > "$NTP_TOKEN"
+    (
+        trap - EXIT HUP INT TERM
+        trap '' HUP
+        attempt=0
+        while [ "$attempt" -lt 60 ]; do
+            [ "$(cat "$NTP_TOKEN" 2>/dev/null)" = "$token" ] || exit 0
+            seconds="$(bounded node "$DIR/nospy-ntp.js" 2>/dev/null)"
+            if [ -n "$seconds" ]; then
+                offset=$(($(date +%s) - seconds))
+                if [ "$offset" -ge -2 ] && [ "$offset" -le 2 ]; then
+                    echo "[~] clock already matches NTP (off by ${offset}s)"
+                elif how="$(set_clock "$seconds")"; then
+                    echo "[+] clock set from NTP via $how (was off by ${offset}s)"
+                else
+                    echo "[-] NTP answered but the clock could not be set"
+                fi
+                [ "$(cat "$NTP_TOKEN" 2>/dev/null)" = "$token" ] && rm -f "$NTP_TOKEN"
+                exit 0
+            fi
+            sleep 10
+            attempt=$((attempt + 1))
+        done
+        echo "[-] no NTP answer after $attempt attempts; clock left alone"
+    ) &
+    echo "[~] setting the clock from NTP in the background"
+}
+
 apply_purge() {
     if is_on purge.boot; then
         purge_residue
@@ -418,6 +461,7 @@ elif [ -f "$DNS_FILTER_STATE" ] && [ -x "$DNS_FILTER_INIT" ]; then
     echo "[-] domain generation failed; stopping the DNS handoff to avoid stale rules"
     "$DNS_FILTER_INIT" disable || dns_filter_ok=0
 fi
+apply_clock
 apply_ads
 apply_voice
 apply_thinq
