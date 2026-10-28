@@ -244,19 +244,19 @@
             }
             else if (map['dns.filter'] === 'on' && map.dns_filter !== 'yes') {
                 verdict.textContent = 'DNS filter needs attention';
-                explain.textContent = 'The DNS filter is enabled but its ConnMan handoff is not active. Check the log and helper status.';
+                explain.textContent = 'The DNS filter is on but its handoff is not active. Check the log for the reason.';
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
             }
             else if (map['dns.filter'] === 'on' && map['dns.disable_ipv6'] === 'off') {
                 verdict.textContent = 'DNS filter active (IPv4 path)';
-                explain.textContent = 'ConnMan IPv6 is preserved. IPv6 DNS may bypass the local helper; enable the companion IPv6 switch for strict coverage.';
+                explain.textContent = 'IPv6 lookups can bypass the filter; turn on "Disable IPv6 with DNS filter" to cover them.';
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
             }
             else if (map.hosts === 'waiting') {
                 verdict.textContent = 'SDP grace period';
-                explain.textContent = 'Other domain blocks are active. SDP will be blocked after the 60-second clock-sync grace period.';
+                explain.textContent = 'Other domain blocks are active. SDP will be blocked after its 60-second grace period.';
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
             }
