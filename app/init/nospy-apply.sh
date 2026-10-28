@@ -21,6 +21,9 @@ fi
 
 exec >>"$LOG" 2>&1
 echo "==== apply $(date) ===="
+# Record the settings this run applies. Saving a toggle does not apply it, so
+# status compares this copy with the saved settings to report pending changes.
+cat "$CONF" > "$CONF_APPLIED" 2>/dev/null || : > "$CONF_APPLIED"
 
 BLOCKDIR="$DIR/blocklist.d"
 DNS_FILTER_INIT="$DIR/nospy-dns-filter.sh"
