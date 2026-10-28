@@ -111,9 +111,9 @@ and the main button cycles Enable / Update / Disable.
   blocked; all other enabled domain blocks apply immediately. SDP is also used
   for LG service initialization, device registration/authentication, app
   metadata and EULA/notice data, so the grace period permits more than clock
-  synchronization. Disabling this category blocks SDP immediately, but the TV
-  can remain at its default `2023-01-01` date and apps such as YouTube may warn
-  or fail until the clock is corrected.
+  synchronization. Disabling this category leaves its domains out of the
+  generated blocklist, including the initial generation. Re-apply protection
+  after changing the setting to remove SDP entries from an older generation.
 - **QuickSet remote codes** use `www.ueiwsp.com` for periodic remote-control
   code lookup. This is kept in the separate `domains.quickset` category,
   which defaults off, so enabling ad blocking does not disable QuickSet by
