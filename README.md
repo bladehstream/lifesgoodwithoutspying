@@ -116,6 +116,9 @@ and the main button cycles Enable / Update / Disable.
   synchronization. Disabling this category leaves its domains out of the
   generated blocklist, including the initial generation. Re-apply protection
   after changing the setting to remove SDP entries from an older generation.
+  The LG Content Store needs SDP: with this category on, the store stops
+  opening once the grace period ends (error -102, or `P6.48.SZ` on some
+  firmware). Leave it off if you use the store.
 - **Clock from NTP** (`clock.ntp`, default off) sets the time from
   `0-2.pool.ntp.org` with a small SNTP client run under the TV's Node, then
   hands it to webOS through `com.webos.service.systemservice/time/setSystemTime`,
