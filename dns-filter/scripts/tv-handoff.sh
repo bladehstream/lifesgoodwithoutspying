@@ -764,6 +764,12 @@ enable_handoff() {
     require_command script
     require_command realpath
     if ! wait_for_service_snapshot; then
+        if [ "$SNAPSHOT_RETRY" = "1" ]; then
+            # 75 (EX_TEMPFAIL): no usable network yet, as at boot before Wi-Fi
+            # connects. Nothing has changed, so the caller can retry later.
+            echo "dns-filter: no usable ConnMan service yet: $SNAPSHOT_ERROR" >&2
+            exit 75
+        fi
         die "could not obtain one coherent active ConnMan snapshot: $SNAPSHOT_ERROR"
     fi
     capture_original_connman

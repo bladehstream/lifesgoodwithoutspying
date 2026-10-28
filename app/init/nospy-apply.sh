@@ -175,7 +175,9 @@ schedule_sdp_block() {
         elif [ "$(append_sdp_domains)" -gt 0 ] 2>/dev/null; then
             echo "[+] SDP domains blocked after ${CLOCK_SYNC_DELAY}s clock-sync grace period"
             if append_sdp_dns_artifact "$token"; then
-                if is_on dns.filter && [ -x "$DNS_FILTER_INIT" ]; then
+                # A filter still waiting for the network loads this list when
+                # it starts, so only a running one needs a reload.
+                if is_on dns.filter && [ -x "$DNS_FILTER_INIT" ] && [ -f "$DNS_FILTER_STATE" ]; then
                     "$DNS_FILTER_INIT" reload || echo "[-] DNS filter reload failed after SDP update"
                 fi
             else
@@ -259,7 +261,43 @@ dns_filter_ipv6_mode() {
     fi
 }
 
+# The handoff needs an active ConnMan service, and at boot Wi-Fi can take
+# longer to connect than the handoff waits. Keep trying in the background for
+# up to 10 minutes rather than leaving the filter off until the next apply. A
+# newer apply or a disable replaces or removes the token, which stops this
+# worker.
+schedule_dns_filter_retry() {
+    token="$(date +%s)-$$"
+    echo "$token" > "$DNS_RETRY_TOKEN"
+    (
+        trap - EXIT HUP INT TERM
+        trap '' HUP
+        waited=0
+        while [ "$waited" -lt 600 ]; do
+            sleep 10
+            waited=$((waited + 10))
+            [ "$(cat "$DNS_RETRY_TOKEN" 2>/dev/null)" = "$token" ] || exit 0
+            is_on dns.filter || break
+            out="$(NOSPY_DNS_IPV6_MODE="$(dns_filter_ipv6_mode)" "$DNS_FILTER_INIT" enable 2>&1)"
+            rc=$?
+            [ "$rc" -eq 75 ] && continue
+            [ -n "$out" ] && printf '%s\n' "$out"
+            if [ "$rc" -eq 0 ]; then
+                echo "[+] DNS filter started after waiting ${waited}s for the network"
+            else
+                # Anything other than "no network yet" will not fix itself.
+                echo "[-] DNS filter could not start"
+            fi
+            break
+        done
+        [ "$waited" -lt 600 ] || echo "[-] no usable network after 600s; DNS filter left off"
+        [ "$(cat "$DNS_RETRY_TOKEN" 2>/dev/null)" = "$token" ] && rm -f "$DNS_RETRY_TOKEN"
+    ) &
+    echo "[~] no network yet; the DNS filter will start in the background once it is up"
+}
+
 apply_dns_filter() {
+    rm -f "$DNS_RETRY_TOKEN"
     if [ -f "$DNS_FILTER_STATE" ] && [ ! -x "$DNS_FILTER_INIT" ]; then
         echo "[-] DNS handoff state exists but its rollback script is missing"
         return 1
@@ -275,7 +313,12 @@ apply_dns_filter() {
             "$DNS_FILTER_INIT" disable || return 1
         fi
         NOSPY_DNS_IPV6_MODE="$(dns_filter_ipv6_mode)" "$DNS_FILTER_INIT" enable
-        return $?
+        rc=$?
+        if [ "$rc" -eq 75 ]; then
+            schedule_dns_filter_retry
+            return 0
+        fi
+        return "$rc"
     fi
 
     if [ -f "$DNS_FILTER_STATE" ] && [ -x "$DNS_FILTER_INIT" ]; then
