@@ -118,8 +118,9 @@ and the main button cycles Enable / Update / Disable.
   or fail until the clock is corrected.
 - **Clock from NTP** (`clock.ntp`, default off) sets the time from
   `0-2.pool.ntp.org` with a small SNTP client run under the TV's Node, then
-  hands it to webOS through `com.webos.service.systemservice/time/setSystemTime`
-  (falling back to `date -s`). With it on, SDP is blocked as soon as protection
+  hands it to webOS through `com.webos.service.systemservice/time/setSystemTime`,
+  falling back to `date -s`. (On webOS 9 with network time on, `setSystemTime`
+  accepts the call but leaves the clock alone, so `date -s` is what works.) With it on, SDP is blocked as soon as protection
   applies, with no grace period. At boot the network may not be up yet, so the
   sync retries in the background for up to 10 minutes; the log records the
   result. It needs `node` on the TV, and UDP port 123 out.

@@ -384,6 +384,8 @@ purge_residue() {
 
 # Set the clock to a Unix time in seconds. Ask the system service first, so
 # webOS knows the time changed; fall back to setting the kernel clock directly.
+# On webOS 9 with network time on, setSystemTime answers returnValue:true but
+# leaves the clock alone, so the date fallback is what takes effect there.
 # Succeeds only if the clock ends up within 10 seconds of the target.
 set_clock() {
     target="$1"

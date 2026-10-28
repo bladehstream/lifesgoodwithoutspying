@@ -428,9 +428,11 @@ apply_clock() {
             [ "$(cat "$NTP_TOKEN" 2>/dev/null)" = "$token" ] || exit 0
             seconds="$(bounded node "$DIR/nospy-ntp.js" 2>/dev/null)"
             if [ -n "$seconds" ]; then
-                before="$(date -u)"
-                if how="$(set_clock "$seconds")"; then
-                    echo "[+] clock set from NTP via $how (was $before, now $(date -u))"
+                offset=$(($(date +%s) - seconds))
+                if [ "$offset" -ge -2 ] && [ "$offset" -le 2 ]; then
+                    echo "[~] clock already matches NTP (off by ${offset}s)"
+                elif how="$(set_clock "$seconds")"; then
+                    echo "[+] clock set from NTP via $how (was off by ${offset}s)"
                 else
                     echo "[-] NTP answered but the clock could not be set"
                 fi
