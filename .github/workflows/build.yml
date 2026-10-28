@@ -29,6 +29,7 @@ jobs:
       - name: Syntax checks
         run: |
           node --check app/app.js
+          node --check app/i18n.js
           for f in app/init/*.sh; do sh -n "$f"; done
           sh -n dns-filter/scripts/tv-handoff.sh
 
