@@ -183,9 +183,14 @@ configure_connman_bus() {
     return 0
 }
 
+# connmanctl prints three flag columns before the name: favorite (*),
+# autoconnect (A) and state (O online, R ready). Match the state column only,
+# so a network name is never read as a flag, and take Ready as well as Online:
+# ConnMan stays at Ready whenever its online check fails, which says nothing
+# about whether the link works.
 active_service_ids() {
     connmanctl services 2>/dev/null |
-        awk '$1 ~ /O/ { print $NF }'
+        awk 'substr($0, 3, 1) ~ /[OR]/ { print $NF }'
 }
 
 connman_unique_name() {
@@ -298,10 +303,15 @@ discover_service_snapshot() {
     }
 
     state="$(printf '%s\n' "$props" | connman_property '' State '')"
-    if [ "$state" != "online" ]; then
-        snapshot_fail "active ConnMan service is not online" 1
-        return 1
-    fi
+    # Ready is as usable as Online; ConnMan only stays at Ready because its
+    # online check failed.
+    case "$state" in
+        online|ready) ;;
+        *)
+            snapshot_fail "active ConnMan service is not connected ($state)" 1
+            return 1
+            ;;
+    esac
     INTERFACE="$(printf '%s\n' "$props" | connman_property Ethernet Interface IPv4)"
     LISTEN_ADDRESS="$(printf '%s\n' "$props" | connman_property IPv4 Address IPv6)"
     [ -n "$INTERFACE" ] || {
