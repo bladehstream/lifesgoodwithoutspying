@@ -83,3 +83,26 @@ ua.nextlgsdp.com
 us.nextlgsdp.com
 vn.nextlgsdp.com
 za.nextlgsdp.com
+# Macro-region and "7"-suffixed regional hosts (eu7 seen in #13; all verified
+# resolving 2026-10-28)
+af.nextlgsdp.com
+as.nextlgsdp.com
+au7.nextlgsdp.com
+br7.nextlgsdp.com
+cn7.nextlgsdp.com
+eu.nextlgsdp.com
+eu7.nextlgsdp.com
+hk7.nextlgsdp.com
+id7.nextlgsdp.com
+il7.nextlgsdp.com
+jp7.nextlgsdp.com
+kr7.nextlgsdp.com
+la.nextlgsdp.com
+me.nextlgsdp.com
+my7.nextlgsdp.com
+na.nextlgsdp.com
+sg7.nextlgsdp.com
+tw7.nextlgsdp.com
+us7.nextlgsdp.com
+vn7.nextlgsdp.com
+za7.nextlgsdp.com
