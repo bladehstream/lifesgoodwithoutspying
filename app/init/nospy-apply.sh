@@ -52,12 +52,11 @@ collect_domains() {
     mode="$1"
     domain_keys > "$KEYS_TMP"
     while IFS= read -r key; do
-        if [ "$key" = domains.sdp ] && [ "$mode" = initial ] && ! is_on clock.ntp; then
-            # Enabled SDP is held back for the grace period; disabled SDP is
-            # included immediately with the other categories. With the NTP
-            # clock on, SDP is not needed for the time, so there is no grace
-            # period.
-            is_on "$key" && continue
+        if [ "$key" = domains.sdp ] && [ "$mode" = initial ]; then
+            # Disabled SDP never contributes domains. Enabled SDP is held back
+            # for the grace period, unless the NTP clock is on: then SDP is not
+            # needed for the time, so it is blocked immediately.
+            is_on "$key" && is_on clock.ntp || continue
         else
             is_on "$key" || continue
         fi

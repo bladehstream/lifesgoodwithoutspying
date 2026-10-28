@@ -113,14 +113,15 @@ and the main button cycles Enable / Update / Disable.
   blocked; all other enabled domain blocks apply immediately. SDP is also used
   for LG service initialization, device registration/authentication, app
   metadata and EULA/notice data, so the grace period permits more than clock
-  synchronization. Disabling this category blocks SDP immediately, but the TV
-  can remain at its default `2023-01-01` date and apps such as YouTube may warn
-  or fail until the clock is corrected.
+  synchronization. Disabling this category leaves its domains out of the
+  generated blocklist, including the initial generation. Re-apply protection
+  after changing the setting to remove SDP entries from an older generation.
 - **Clock from NTP** (`clock.ntp`, default off) sets the time from
   `0-2.pool.ntp.org` with a small SNTP client run under the TV's Node, then
   hands it to webOS through `com.webos.service.systemservice/time/setSystemTime`,
   falling back to `date -s`. (On webOS 9 with network time on, `setSystemTime`
-  accepts the call but leaves the clock alone, so `date -s` is what works.) With it on, SDP is blocked as soon as protection
+  accepts the call but leaves the clock alone, so `date -s` is what works.)
+  With both this and the SDP category on, SDP is blocked as soon as protection
   applies, with no grace period. At boot the network may not be up yet, so the
   sync retries in the background for up to 10 minutes; the log records the
   result. It needs `node` on the TV, and UDP port 123 out.
