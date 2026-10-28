@@ -580,6 +580,7 @@ export class DnsFilterProxy {
           return;
         }
 
+        if (responseBuffer.length < 2) return;
         const length = socketBufferLength(responseBuffer);
         if (length === null) {
           finish(new Error('invalid upstream TCP DNS length'));

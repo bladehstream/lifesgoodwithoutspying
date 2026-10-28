@@ -53,7 +53,7 @@ function listenSilentUpstream(): Promise<Upstream> {
   });
 }
 
-function listenTcpUpstream(): Promise<TcpUpstream> {
+function listenTcpUpstream(fragment = false): Promise<TcpUpstream> {
   return new Promise((resolve, reject) => {
     const queries: Buffer[] = [];
     const server = net.createServer((socket) => {
@@ -75,7 +75,10 @@ function listenTcpUpstream(): Promise<TcpUpstream> {
           const frame = Buffer.alloc(response.length + 2);
           frame.writeUInt16BE(response.length, 0);
           response.copy(frame, 2);
-          socket.write(frame);
+          if (fragment) {
+            socket.write(frame.slice(0, 1));
+            setTimeout(() => socket.write(frame.slice(1)), 30);
+          } else socket.write(frame);
         }
       });
       socket.on('error', () => undefined);
@@ -424,4 +427,17 @@ describe('DnsFilterProxy', () => {
       await closeServer(upstream.server);
     }
   }, 10000);
+  it('accepts a TCP response whose length prefix arrives in separate packets', async () => {
+    const upstream = await listenTcpUpstream(true);
+    const proxy = new DnsFilterProxy({
+      listenAddress: '127.0.0.1', listenPort: 0,
+      upstream: {host: '127.0.0.1', port: upstream.port},
+      blocklistPath: 'unused', blocklistFormat: 'domains', timeoutMs: 1000, logBlocked: false,
+    }, new Blocklist([]));
+    try {
+      await startProxy(proxy);
+      const reply = await sendTcpQuery(proxy.getListenPort(), queryFor('fragment.example.test', 42));
+      expect(reply.readUInt16BE(2) & 15).toBe(0);
+    } finally { await stopProxy(proxy); await closeServer(upstream.server); }
+  });
 });
