@@ -10,6 +10,7 @@
     var logView = document.getElementById('logview');
     var enabled = false;
     var dirty = false;
+    var uiBusy = false;
     var restoreFocus = null;
     var STATUS_POLL_MS = 5000;
     var statusPollTimer = null;
@@ -177,6 +178,13 @@
             var on = !!key && map[key] === 'on';
             btn.classList.toggle('on', on);
             btn.setAttribute('aria-checked', on ? 'true' : 'false');
+            if (btn.getAttribute('data-unavailable') === 'true' && key === 'purge.boot') {
+                btn.disabled = uiBusy || !on;
+                var detail = btn.querySelector('small');
+                if (detail) detail.textContent = on ?
+                    'Unavailable; turn off this saved setting' :
+                    'Unavailable until cache paths are verified for this firmware';
+            }
         });
     }
     function updateMainButton() {
@@ -331,11 +339,15 @@
     }
     // lock the ui while something runs, then put focus back
     function busy(on) {
+        uiBusy = on;
         if (on) {
             stopStatusPolling();
             restoreFocus = document.activeElement;
         }
-        allButtons().forEach(function (b) { b.disabled = on; });
+        allButtons().forEach(function (b) {
+            b.disabled = on || (b.getAttribute('data-unavailable') === 'true' &&
+                !(b.getAttribute('data-key') === 'purge.boot' && b.classList.contains('on')));
+        });
         invalidateNavigation();
         if (!on) {
             var target = document.getElementById('btn-main');

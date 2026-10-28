@@ -32,7 +32,7 @@
     </section>
 
     <section class="tools">
-      <button id="btn-purge">Purge now</button>
+      <button id="btn-purge" data-unavailable="true" disabled>Purge unavailable</button>
       <button id="btn-selftest">Self-test</button>
       <button id="btn-refresh">Refresh</button>
       <button id="btn-log">Show log</button>
@@ -94,9 +94,9 @@
             <span class="sw" aria-hidden="true"></span>
             <span class="layer-text"><b>ThinQ &amp; companion</b><small>Optional. Stops ThinQ/Alexa/IoT daemons and breaks the LG ThinQ app</small></span>
           </button>
-          <button class="layer" data-key="purge.boot" role="switch" aria-checked="false">
+          <button class="layer" data-key="purge.boot" data-unavailable="true" disabled role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b>Purge on boot</b><small>Clear ACR and voice data at startup</small></span>
+            <span class="layer-text"><b>Purge on boot</b><small>Unavailable until cache paths are verified for this firmware</small></span>
           </button>
           <button class="layer" data-key="domains.lgchannels" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>

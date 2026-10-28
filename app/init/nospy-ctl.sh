@@ -98,6 +98,10 @@ case "$1" in
             on|off) ;;
             *) echo "value must be on or off" >&2; exit 2 ;;
         esac
+        if [ "$key" = purge.boot ] && [ "$val" = on ]; then
+            echo "Purge unavailable: no verified cache-path allowlist for this firmware" >&2
+            exit 1
+        fi
         conf_set "$key" "$val"
         echo "$key=$val"
         # Re-apply so the change takes effect immediately.
