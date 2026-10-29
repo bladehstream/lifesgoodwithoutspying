@@ -62,6 +62,13 @@ html, body {
   font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
 }
 
+/* Chivo has no Cyrillic, and a per-glyph fallback would mix two typefaces in
+   one word, so Russian uses the system face for translated text. The log
+   stays in English and keeps Plex Mono. */
+html[lang="ru"] body,
+html[lang="ru"] .tag,
+html[lang="ru"] .readout dd { font-family: "LG Smart UI", "Helvetica Neue", Arial, sans-serif; }
+
 .tag.ok { color: #7CC08B; border-color: rgba(124, 192, 139, 0.45); }
 .tag.bad { color: #D4554A; border-color: rgba(212, 85, 74, 0.45); }
 

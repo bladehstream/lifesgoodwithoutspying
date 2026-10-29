@@ -4,3 +4,4 @@ dist/
 node_modules/
 /app/init/nospy-dns-filter.js
 /app/init/nospy-dns-filter.sh
+__pycache__/
