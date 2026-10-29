@@ -180,16 +180,22 @@
     // on webOS 4.4). Retry those; a fresh call relaunches the service.
     var HBC_ATTEMPT_MS = 20000;
     var HBC_ATTEMPTS = 4;
-    function callLost(e) {
-        return !!e && (e.timedOut === true ||
-            /^(Message status unknown|Service does not exist)/.test(e.message));
+    // A call that never reached the service is always safe to send again. One
+    // that timed out may still have run, so it is retried only when the caller
+    // says running it twice is harmless.
+    function callLost(e, repeatable) {
+        if (!e)
+            return false;
+        if (/^(Message status unknown|Service does not exist)/.test(e.message))
+            return true;
+        return !!repeatable && e.timedOut === true;
     }
-    function hbc(method, params, timeoutMs) {
+    function hbc(method, params, timeoutMs, repeatable) {
         var attempt = 0;
         function once() {
             attempt++;
             return luna(HBC + '/' + method, params, timeoutMs || HBC_ATTEMPT_MS).catch(function (e) {
-                if (attempt < HBC_ATTEMPTS && callLost(e))
+                if (attempt < HBC_ATTEMPTS && callLost(e, repeatable))
                     return delay(1000).then(once);
                 throw e;
             });
@@ -206,8 +212,8 @@
     function shq(s) {
         return "'" + String(s).replace(/'/g, "'\\''") + "'";
     }
-    function exec(command, quiet, timeoutMs) {
-        return hbc('exec', { command: command }, timeoutMs).then(function (res) {
+    function exec(command, quiet, timeoutMs, repeatable) {
+        return hbc('exec', { command: command }, timeoutMs, repeatable).then(function (res) {
             if (!quiet) {
                 var text = (res.stdoutString || '').trim();
                 if (text)
@@ -224,7 +230,7 @@
     function getFolder() {
         if (folderPath)
             return Promise.resolve(folderPath);
-        return hbc('getAppInfo', { id: APP_ID }).then(function (res) {
+        return hbc('getAppInfo', { id: APP_ID }, null, true).then(function (res) {
             if (!res.appInfo || !res.appInfo.folderPath) {
                 throw new Error('Could not resolve app folder path');
             }
@@ -232,9 +238,14 @@
             return folderPath;
         });
     }
+    // Read-only actions. Only these are sent again when a reply is lost; the
+    // rest (selftest, purge, set and the job starts) get one longer attempt.
+    var REPEATABLE_ACTIONS = { status: true, joblog: true, log: true, get: true };
     function ctl(action, quiet, timeoutMs) {
+        var repeatable = REPEATABLE_ACTIONS[action.split(' ')[0]] === true;
+        var limit = timeoutMs || (repeatable ? HBC_ATTEMPT_MS : LUNA_TIMEOUT_MS);
         return getFolder().then(function (dir) {
-            return exec('sh ' + shq(dir + '/init/nospy-ctl.sh') + ' ' + action, quiet, timeoutMs);
+            return exec('sh ' + shq(dir + '/init/nospy-ctl.sh') + ' ' + action, quiet, limit, repeatable);
         });
     }
     var JOB_POLL_MS = 2000;
@@ -262,14 +273,30 @@
             });
         });
     }
+    function waitForIdle(deadline) {
+        return ctl('status', true).then(function (r) {
+            if (parseStatus(r.stdoutString).job !== 'running')
+                return null;
+            if (Date.now() > deadline)
+                throw new Error('Still applying after ' + (JOB_WAIT_MS / 1000) + 's; see "Show log"');
+            return delay(JOB_POLL_MS).then(function () {
+                return waitForIdle(deadline);
+            });
+        });
+    }
     function job(command) {
         showApplying();
         return ctl(command).catch(function (e) {
-            // A retried call can find the job its lost first attempt started.
+            // A job is already running, such as one an earlier session of the
+            // app started. It does not include this change, so let it finish
+            // and then start this one.
             var stderr = e.data && e.data.stderrString;
-            if (stderr && stderr.indexOf('another change is still being applied') >= 0)
-                return null;
-            throw e;
+            if (!stderr || stderr.indexOf('another change is still being applied') < 0)
+                throw e;
+            log('waiting for the change already being applied');
+            return waitForIdle(Date.now() + JOB_WAIT_MS).then(function () {
+                return ctl(command);
+            });
         }).then(function () {
             return waitForJob(Date.now() + JOB_WAIT_MS);
         });
@@ -435,7 +462,7 @@
     function refresh(options) {
         var quiet = !!(options && options.quiet);
         stopStatusPolling();
-        return hbc('checkRoot', {}).then(function () {
+        return hbc('checkRoot', {}, null, true).then(function () {
             return true;
         }, function (e) {
             // Only a plain returnValue:false answer means "not root".
@@ -555,8 +582,7 @@
     });
     document.getElementById('btn-selftest').addEventListener('click', function () {
         showConsole(true);
-        // Its resolver and curl probes can take a while on a slow TV.
-        run('Self-test', function () { return ctl('selftest', false, LUNA_TIMEOUT_MS); });
+        run('Self-test', function () { return ctl('selftest'); });
     });
     document.getElementById('btn-refresh').addEventListener('click', function () {
         run('Refresh', refresh);
