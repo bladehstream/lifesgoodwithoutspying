@@ -188,19 +188,46 @@ case "${TIMEOUT_STYLE:-}" in
     *) TIMEOUT_STYLE="" ;;
 esac
 
+# Run a command under a shell watchdog: SIGTERM after SECS seconds, then
+# SIGKILL GRACE seconds later (straight to SIGKILL when GRACE is 0). Returns
+# the command's status. The watchdog's stdio is detached so a caller reading
+# this through a command substitution is not held open until it fires, and
+# cancelling it also stops its sleep, which would otherwise linger until it
+# would have fired.
+run_capped() {
+    c_secs="$1"
+    c_grace="$2"
+    shift 2
+    # A background command gets /dev/null as stdin; hand it the caller's.
+    { "$@" <&3 3<&- & } 3<&0
+    c_pid=$!
+    (
+        trap 'kill "$c_sleep" 2>/dev/null; exit 0' TERM
+        c_sleep=
+        sleep "$c_secs" &
+        c_sleep=$!
+        wait "$c_sleep"
+        if [ "$c_grace" -gt 0 ]; then
+            kill -TERM "$c_pid" 2>/dev/null || exit 0
+            sleep "$c_grace" &
+            c_sleep=$!
+            wait "$c_sleep"
+        fi
+        kill -KILL "$c_pid" 2>/dev/null
+    ) </dev/null >/dev/null 2>&1 &
+    c_dog=$!
+    wait "$c_pid"
+    c_rc=$?
+    kill "$c_dog" 2>/dev/null
+    wait "$c_dog" 2>/dev/null
+    return "$c_rc"
+}
+
 # Run one probe for at most 2 seconds. Under the Homebrew Channel's exec on
 # webOS 4.4 (BusyBox 1.24), timeout never starts its command and only returns
 # once its own limit kills it, so an unguarded probe costs 11 seconds.
 probe_quick() {
-    "$@" </dev/null >/dev/null 2>&1 &
-    p_pid=$!
-    ( sleep 2; kill -KILL "$p_pid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
-    p_dog=$!
-    wait "$p_pid"
-    p_rc=$?
-    kill "$p_dog" 2>/dev/null
-    wait "$p_dog" 2>/dev/null
-    return "$p_rc"
+    run_capped 2 0 "$@" </dev/null >/dev/null 2>&1
 }
 
 detect_timeout_style() {
@@ -222,8 +249,6 @@ detect_timeout_style() {
 # Run a command for at most SECS seconds. Builds without a usable timeout
 # applet (seen on webOS 4.x) get a shell watchdog instead, as an unbounded
 # luna-send there blocks the whole apply, and with it the app's UI.
-# The watchdog's stdio is detached so a caller reading this through a command
-# substitution is not held open until it fires.
 bounded_for() {
     b_secs="$1"
     shift
@@ -234,21 +259,7 @@ bounded_for() {
         bare) timeout -s KILL "$b_secs" "$@"; return $? ;;
         flag) timeout -t "$b_secs" -s KILL "$@"; return $? ;;
     esac
-    # A background command gets /dev/null as stdin; hand it the caller's.
-    { "$@" <&3 3<&- & } 3<&0
-    b_pid=$!
-    (
-        sleep "$b_secs"
-        kill -TERM "$b_pid" 2>/dev/null || exit 0
-        sleep 1
-        kill -KILL "$b_pid" 2>/dev/null
-    ) </dev/null >/dev/null 2>&1 &
-    b_dog=$!
-    wait "$b_pid"
-    b_rc=$?
-    kill "$b_dog" 2>/dev/null
-    wait "$b_dog" 2>/dev/null
-    return "$b_rc"
+    run_capped "$b_secs" 1 "$@"
 }
 
 # Run a command with a timeout to avoid a hang blocking boot or the UI.

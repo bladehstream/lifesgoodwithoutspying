@@ -60,21 +60,33 @@ dns_filter_field() {
 
 # Background jobs.
 #
-# enable, disable, apply and set used to run the whole apply inside the
-# Homebrew Channel exec call, so the UI waited on every child the apply
-# started. One blocking child (luna-send on webOS 4.x) then froze the app with
-# every button disabled. These now start a detached job and return at once; the
-# UI polls "status" for job=running|done|failed and reads "joblog" afterwards.
-JOB_STATE="/var/lib/webosbrew/lifesgoodwithoutspying.job"
-JOB_RESULT="/var/lib/webosbrew/lifesgoodwithoutspying.job-result"
-# Hard cap on one job. A stage that outlives it is killed, so the UI always
-# gets an answer instead of polling a job that never ends.
+# enable, disable and apply used to run the whole apply inside the Homebrew
+# Channel exec call, so the UI waited on every child the apply started. One
+# blocking child (luna-send on webOS 4.x) then froze the app with every button
+# disabled. These now start a detached job and return at once; the UI polls
+# "status" for job=running|done|failed and reads "joblog" afterwards.
+#
+# Both files describe jobs of the current boot only, so they live in /tmp: a
+# pid saved before a reboot can name an unrelated process after it.
+JOB_STATE="/tmp/lifesgoodwithoutspying.job"
+JOB_RESULT="/tmp/lifesgoodwithoutspying.job-result"
+# Hard cap on one job. A stage that outlives it gets SIGTERM, so apply can
+# remove its scratch files, and SIGKILL JOB_GRACE seconds later. The UI always
+# gets an answer instead of polling a job that never ends. The shell acts on
+# SIGTERM only once its current command returns, so JOB_GRACE must outlast
+# bounded's 10 seconds.
 JOB_LIMIT=240
+JOB_GRACE=15
 
 job_running() {
     [ -f "$JOB_STATE" ] || return 1
     read -r job_pid job_action < "$JOB_STATE"
-    [ -n "$job_pid" ] && kill -0 "$job_pid" 2>/dev/null
+    [ -n "$job_pid" ] || return 1
+    # A pid can also be reused within one boot, so check it is still a job.
+    case " $(tr '\000' ' ' < "/proc/$job_pid/cmdline" 2>/dev/null) " in
+        *" run-job "*) return 0 ;;
+    esac
+    return 1
 }
 
 job_state() {
@@ -82,7 +94,7 @@ job_state() {
         echo running
     elif [ -f "$JOB_RESULT" ]; then
         read -r res_action res_rc < "$JOB_RESULT"
-        if [ "$res_rc" = 0 ]; then echo done; else echo failed; fi
+        if [ "$res_rc" = 0 ]; then echo "done"; else echo failed; fi
     else
         echo idle
     fi
@@ -93,7 +105,7 @@ job_start() {
         echo "another change is still being applied ($job_action)" >&2
         exit 1
     fi
-    mkdir -p "$(dirname "$JOB_STATE")"
+    mkdir -p "$(dirname "$LOG")"
     rm -f "$JOB_RESULT"
     # Trim now: the job holds the log open, so apply's own trim would split it.
     log_trim "$LOG"
@@ -112,18 +124,18 @@ job_body() {
         enable)
             mkdir -p "$INITD"
             chmod +x "$APPLY" "$REMOVE"
-            bounded_for "$JOB_LIMIT" "$APPLY"
+            run_capped "$JOB_LIMIT" "$JOB_GRACE" "$APPLY"
             rc=$?
             ln -sf "$APPLY" "$LINK"
             return "$rc"
             ;;
         disable)
             rm -f "$LINK"
-            bounded_for "$JOB_LIMIT" "$REMOVE"
+            run_capped "$JOB_LIMIT" "$JOB_GRACE" "$REMOVE"
             ;;
         apply)
             chmod +x "$APPLY"
-            bounded_for "$JOB_LIMIT" "$APPLY"
+            run_capped "$JOB_LIMIT" "$JOB_GRACE" "$APPLY"
             ;;
         *)
             echo "unknown job: $1"

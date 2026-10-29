@@ -31,6 +31,9 @@ APPS_TMP="/tmp/lifesgoodwithoutspying.apps.$$"
 # Scratch files are per-run and multi-megabyte-free, but never cleaned before;
 # remove them however we exit.
 trap 'rm -f "$DOMAINS_TMP" "$KEYS_TMP" "$UNITS_TMP" "$EXECS_TMP" "$APPS_TMP" "$DNS_BLOCKLIST.tmp.$$" "$DNS_BLOCKLIST.sdp.$$"' EXIT
+# An untrapped SIGTERM (the job cap's first signal) ends the shell without
+# running the EXIT trap, so turn it into a normal exit.
+trap 'exit 143' INT TERM
 
 # Remove only our mounts from /etc/hosts
 # webosbrew (and potentially other apps) may have mounts on this
