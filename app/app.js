@@ -17,6 +17,8 @@
     var lastStatus = null;
     var navigationRowsCache = null;
     var logBtn = document.getElementById('btn-log');
+    var i18n = window.nospyI18n;
+    var setText = i18n.setText;
     // Cap the retained log; the oldest lines are dropped past this.
     var MAX_LOG_LINES = 2000;
     var logLines = [];
@@ -32,7 +34,7 @@
         if (show)
             scrollConsoleToBottom();
         if (logBtn)
-            logBtn.textContent = show ? 'Hide log' : 'Show log';
+            setText(logBtn, show ? 'button.hideLog' : 'button.showLog');
     }
     // One text node per line, trimmed to MAX_LOG_LINES, so the buffer is not
     // re-parsed on every append and cannot grow for the whole session.
@@ -181,9 +183,8 @@
             if (btn.getAttribute('data-unavailable') === 'true' && key === 'purge.boot') {
                 btn.disabled = uiBusy || !on;
                 var detail = btn.querySelector('small');
-                if (detail) detail.textContent = on ?
-                    'Unavailable; turn off this saved setting' :
-                    'Unavailable until cache paths are verified for this firmware';
+                if (detail) setText(detail, on ?
+                    'layer.purge.boot.savedOn' : 'layer.purge.boot.detail');
             }
         });
     }
@@ -193,84 +194,84 @@
             return;
         b.classList.remove('pending', 'danger');
         if (!enabled) {
-            b.textContent = 'Enable protection';
+            setText(b, 'button.enable');
         }
         else if (dirty) {
-            b.textContent = 'Update protection';
+            setText(b, 'button.update');
             b.classList.add('pending');
         }
         else {
-            b.textContent = 'Disable protection';
+            setText(b, 'button.disable');
             b.classList.add('danger');
         }
     }
-    function setTag(text, cls) {
+    function setTag(key, cls) {
         var tag = document.getElementById('dev-root');
-        tag.textContent = text;
+        setText(tag, key);
         tag.className = 'tag' + (cls ? ' ' + cls : '');
     }
     function renderState(map, isRoot) {
         enabled = map.autostart === 'on';
         document.getElementById('r-domains').textContent = map.blocklist || '—';
-        document.getElementById('r-hosts').textContent =
-            map.hosts === 'ours' ? 'active' :
-            (map.hosts === 'waiting' ? 'waiting' :
-            (map.hosts === 'external' ? 'other' : 'off'));
+        setText(document.getElementById('r-hosts'),
+            map.hosts === 'ours' ? 'value.active' :
+            (map.hosts === 'waiting' ? 'value.waiting' :
+            (map.hosts === 'external' ? 'value.other' : 'value.off')));
         var dnsRuntime = map.dns_filter || 'unavailable';
         var dnsEnabled = map['dns.filter'] === 'on';
         var dnsIpv6Disabled = map['dns.disable_ipv6'] === 'on';
-        document.getElementById('r-dns').textContent =
+        setText(document.getElementById('r-dns'),
             dnsEnabled ?
-                (dnsRuntime === 'yes' ? 'active' :
-                    (dnsRuntime === 'no' ? 'pending' : 'unavailable')) : 'off';
-        document.getElementById('r-ipv6').textContent =
-            !dnsEnabled ? 'not managed' : (dnsIpv6Disabled ? 'disabled' : 'preserved');
-        document.getElementById('r-voice').textContent = map.voice === 'stopped' ? 'stopped' : 'running';
-        document.getElementById('r-ads').textContent = map.ads === 'stopped' ? 'stopped' : 'running';
+                (dnsRuntime === 'yes' ? 'value.active' :
+                    (dnsRuntime === 'no' ? 'value.pending' : 'value.unavailable')) : 'value.off');
+        setText(document.getElementById('r-ipv6'),
+            !dnsEnabled ? 'value.notManaged' : (dnsIpv6Disabled ? 'value.disabled' : 'value.preserved'));
+        setText(document.getElementById('r-voice'), map.voice === 'stopped' ? 'value.stopped' : 'value.running');
+        setText(document.getElementById('r-ads'), map.ads === 'stopped' ? 'value.stopped' : 'value.running');
         var verdict = document.getElementById('verdict');
         var explain = document.getElementById('explain');
         verdict.classList.remove('is-secure', 'is-warn', 'is-danger');
         appEl.classList.remove('secured', 'pending');
         if (!isRoot) {
-            setTag('no root', 'bad');
-            verdict.textContent = 'Needs root';
-            explain.textContent = 'Install and enable the Homebrew Channel, then reopen this app.';
+            setTag('tag.noRoot', 'bad');
+            setText(verdict, 'verdict.noRoot');
+            setText(explain, 'explain.noRoot');
             verdict.classList.add('is-danger');
         }
         else {
-            setTag('rooted', 'ok');
+            setTag('tag.rooted', 'ok');
             if (!enabled) {
-                verdict.textContent = 'Not protected';
-                explain.textContent = 'This TV can still send viewing, ad, and voice data.';
+                setText(verdict, 'verdict.off');
+                setText(explain, 'explain.off');
                 verdict.classList.add('is-danger');
             }
             else if (dirty) {
-                verdict.textContent = 'Changes pending';
-                explain.textContent = 'Your settings changed. Select "Update protection" to apply them.';
+                setText(verdict, 'verdict.pending');
+                setText(explain, 'explain.pending');
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
             }
             else if (map['dns.filter'] === 'on' && map.dns_filter !== 'yes') {
-                verdict.textContent = 'DNS filter needs attention';
-                explain.textContent = 'The DNS filter is enabled but its ConnMan handoff is not active. Check the log and helper status.';
+                setText(verdict, 'verdict.dnsAttention');
+                setText(explain, 'explain.dnsAttention');
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
             }
             else if (map['dns.filter'] === 'on' && map['dns.disable_ipv6'] === 'off') {
-                verdict.textContent = 'DNS filter active (IPv4 path)';
-                explain.textContent = 'ConnMan IPv6 is preserved. IPv6 DNS may bypass the local helper; enable the companion IPv6 switch for strict coverage.';
+                setText(verdict, 'verdict.dnsIpv4');
+                setText(explain, 'explain.dnsIpv4');
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
             }
             else if (map.hosts === 'waiting') {
-                verdict.textContent = 'SDP grace period';
-                explain.textContent = 'Other domain blocks are active. SDP will be blocked after the 60-second clock-sync grace period.';
+                setText(verdict, 'verdict.sdpGrace');
+                setText(explain, 'explain.sdpGrace');
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
             }
             else {
-                verdict.textContent = 'Protected';
-                explain.textContent = 'Targeted ad and voice services are stopped; enabled domain blocks are applied.';
+                setText(verdict, 'verdict.protected');
+                setText(explain, 'explain.protected');
                 verdict.classList.add('is-secure');
                 appEl.classList.add('secured');
             }
@@ -316,6 +317,7 @@
             return ctl('status', quiet).then(function (r) {
                 var map = parseStatus(r.stdoutString);
                 lastStatus = map;
+                dirty = map.changes === 'pending';
                 renderToggles(map);
                 renderState(map, true);
                 return null;
@@ -377,12 +379,19 @@
             if (!key)
                 return;
             var next = btn.classList.contains('on') ? 'off' : 'on';
+            // set only saves the key; "Update protection" (or Enable) applies
+            // every change at once. A status call costs seconds, so update the
+            // view from the last known state instead.
             run(key + ' = ' + next, function () {
-                return ctl('set ' + key + ' ' + next);
+                return ctl('set ' + key + ' ' + next, true);
             }, function () {
                 if (enabled)
                     dirty = true;
-                return refresh();
+                if (!lastStatus)
+                    return refresh();
+                lastStatus[key] = next;
+                renderToggles(lastStatus);
+                renderState(lastStatus, true);
             });
         });
     });
@@ -418,6 +427,9 @@
     });
     logBtn.addEventListener('click', function () {
         showConsole(logView.hidden);
+    });
+    document.getElementById('btn-language').addEventListener('click', function () {
+        i18n.cycle();
     });
     // d-pad navigation
     function invalidateNavigation() {
@@ -590,6 +602,7 @@
         focusElement(logBtn);
     }
     window.addEventListener('resize', invalidateNavigation, true);
+    document.addEventListener('nospy-language-change', invalidateNavigation);
     var KEY_DIR = { 37: 'left', 38: 'up', 39: 'right', 40: 'down' };
     document.addEventListener('keydown', function (e) {
         var dir = KEY_DIR[e.keyCode];
@@ -629,6 +642,12 @@
         stopStatusPolling();
         refresh({ quiet: true });
     }, true);
+    // The menu language lives in the settings service; navigator.language in
+    // the web runtime does not always follow it.
+    luna('luna://com.webos.settingsservice/getSystemSettings', { keys: ['localeInfo'] }).then(function (res) {
+        var info = res && res.settings && res.settings.localeInfo;
+        i18n.setSystemLocale(info && info.locales && info.locales.UI);
+    }).catch(function () { });
     refresh();
     var main = document.getElementById('btn-main');
     if (main)

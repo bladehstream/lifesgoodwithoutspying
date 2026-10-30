@@ -20,11 +20,13 @@ TVs: ad delivery, Automatic Content Recognition, and always-on voice capture.
 
 - Blackholes LG ad / ACR / telemetry domains to loopback by bind-mounting a
   generated `/etc/hosts` (per-category toggles, including separate
-  crash/diagnostic, QuickSet, and optional ThinQ / companion and Home
-  app-session lists).
+  crash/diagnostic, QuickSet, and optional ThinQ / companion, Home
+  app-session and LG Content Store lists).
 - Adds a separate LG Service Delivery Platform (SDP) category. Other domain
   blocks apply immediately, while SDP waits 60 seconds at boot so the TV can
   set its clock before those domains are added to the sink.
+- Optionally sets the clock from NTP (`pool.ntp.org`) instead, so SDP can be
+  blocked from boot.
 - Stops the on-TV ad, ACR and telemetry daemons (`admanager`, `livepick`,
   `acr2`, `nudge`, `rdxd`, `uploadd`, `sportsalarm`).
 - Stops the LG voice and NLP services (`voiceinput`, `voiceconductor`,
@@ -112,9 +114,21 @@ and the main button cycles Enable / Update / Disable.
   blocked; all other enabled domain blocks apply immediately. SDP is also used
   for LG service initialization, device registration/authentication, app
   metadata and EULA/notice data, so the grace period permits more than clock
-  synchronization. Disabling this category blocks SDP immediately, but the TV
-  can remain at its default `2023-01-01` date and apps such as YouTube may warn
-  or fail until the clock is corrected.
+  synchronization. Disabling this category leaves its domains out of the
+  generated blocklist, including the initial generation. Re-apply protection
+  after changing the setting to remove SDP entries from an older generation.
+  The LG Content Store needs SDP: with this category on, the store stops
+  opening once the grace period ends (error -102, or `P6.48.SZ` on some
+  firmware). Leave it off if you use the store.
+- **Clock from NTP** (`clock.ntp`, default off) sets the time from
+  `0-2.pool.ntp.org` with a small SNTP client run under the TV's Node, then
+  hands it to webOS through `com.webos.service.systemservice/time/setSystemTime`,
+  falling back to `date -s`. (On webOS 9 with network time on, `setSystemTime`
+  accepts the call but leaves the clock alone, so `date -s` is what works.)
+  With both this and the SDP category on, SDP is blocked as soon as protection
+  applies, with no grace period. At boot the network may not be up yet, so the
+  sync retries in the background for up to 10 minutes; the log records the
+  result. It needs `node` on the TV, and UDP port 123 out.
 - **QuickSet remote codes** use `www.ueiwsp.com` for periodic remote-control
   code lookup. This is kept in the separate `domains.quickset` category,
   which defaults off, so enabling ad blocking does not disable QuickSet by
@@ -124,6 +138,12 @@ and the main button cycles Enable / Update / Disable.
   hosts, which upload app-session records (app IDs, user number, start/end
   times). The same hosts serve Home recommendations, previews, sports and
   channel-map metadata, so the category defaults off.
+- **LG Content Store** (`domains.lgrecommends`) blocks the hosts the store
+  needs: `*.app.lgwebostv.com`, which serves its interface, and the regional
+  `*.lgrecommends.lgappstv.com` recommendation hosts. These used to be in the
+  Telemetry and Home dashboard categories, where they stopped the store opening
+  (error 202 or -102). With them in their own category, which defaults off,
+  the other categories no longer break the store. The store also needs SDP.
 - **The domain sink is host-based.** The self-test's `getent` and `curl`
   checks only prove that the generated `/etc/hosts` is visible to commands
   using the local resolver. Some webOS services use their own DNS path,

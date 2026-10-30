@@ -53,7 +53,7 @@ function listenSilentUpstream(): Promise<Upstream> {
   });
 }
 
-function listenTcpUpstream(): Promise<TcpUpstream> {
+function listenTcpUpstream(fragment = false, wrongQuestion = false): Promise<TcpUpstream> {
   return new Promise((resolve, reject) => {
     const queries: Buffer[] = [];
     const server = net.createServer((socket) => {
@@ -72,10 +72,14 @@ function listenTcpUpstream(): Promise<TcpUpstream> {
           response.writeUInt16BE(0x8180, 2);
           response.writeUInt16BE(1, 4);
           response.writeUInt16BE(0, 6);
+          if (wrongQuestion) response[13] = response[13] === 97 ? 98 : 97;
           const frame = Buffer.alloc(response.length + 2);
           frame.writeUInt16BE(response.length, 0);
           response.copy(frame, 2);
-          socket.write(frame);
+          if (fragment) {
+            socket.write(frame.slice(0, 1));
+            setTimeout(() => socket.write(frame.slice(1)), 30);
+          } else socket.write(frame);
         }
       });
       socket.on('error', () => undefined);
@@ -424,4 +428,73 @@ describe('DnsFilterProxy', () => {
       await closeServer(upstream.server);
     }
   }, 10000);
+  it('accepts a TCP response whose length prefix arrives in separate packets', async () => {
+    const upstream = await listenTcpUpstream(true);
+    const proxy = new DnsFilterProxy({
+      listenAddress: '127.0.0.1', listenPort: 0,
+      upstream: {host: '127.0.0.1', port: upstream.port},
+      blocklistPath: 'unused', blocklistFormat: 'domains', timeoutMs: 1000, logBlocked: false,
+    }, new Blocklist([]));
+    try {
+      await startProxy(proxy);
+      const reply = await sendTcpQuery(proxy.getListenPort(), queryFor('fragment.example.test', 42));
+      expect(reply.readUInt16BE(2) & 15).toBe(0);
+    } finally { await stopProxy(proxy); await closeServer(upstream.server); }
+  });
+  it('ignores UDP replies from an unexpected source even with the right ID', async () => {
+    const upstream = await listenSilentUpstream();
+    const forger = dgram.createSocket('udp4');
+    const proxy = new DnsFilterProxy({
+      listenAddress: '127.0.0.1', listenPort: 0,
+      upstream: {host: '127.0.0.1', port: upstream.port},
+      blocklistPath: 'unused', blocklistFormat: 'domains', timeoutMs: 200, logBlocked: false,
+    }, new Blocklist([]));
+    upstream.socket.on('message', (query, remote) => {
+      const response = Buffer.from(query); response.writeUInt16BE(0x8180, 2);
+      forger.send(response, remote.port, remote.address);
+    });
+    const client = dgram.createSocket('udp4');
+    try {
+      await startProxy(proxy);
+      const reply = await sendQuery(client, proxy.getListenPort(), queryFor('forge.example.test', 43));
+      expect(reply.readUInt16BE(2) & 15).toBe(2);
+    } finally {
+      await stopProxy(proxy); await closeSocket(client);
+      await closeSocket(forger); await closeSocket(upstream.socket);
+    }
+  });
+  it('ignores a UDP response with the right ID but a different question', async () => {
+    const upstream = await listenSilentUpstream();
+    const proxy = new DnsFilterProxy({
+      listenAddress: '127.0.0.1', listenPort: 0,
+      upstream: {host: '127.0.0.1', port: upstream.port},
+      blocklistPath: 'unused', blocklistFormat: 'domains', timeoutMs: 200, logBlocked: false,
+    }, new Blocklist([]));
+    upstream.socket.on('message', (query, remote) => {
+      const response = Buffer.from(query); response.writeUInt16BE(0x8180, 2);
+      response[13] = response[13] === 97 ? 98 : 97;
+      upstream.socket.send(response, remote.port, remote.address);
+    });
+    const client = dgram.createSocket('udp4');
+    try {
+      await startProxy(proxy);
+      const reply = await sendQuery(client, proxy.getListenPort(), queryFor('original.example.test', 44));
+      expect(reply.readUInt16BE(2) & 15).toBe(2);
+    } finally {
+      await stopProxy(proxy); await closeSocket(client); await closeSocket(upstream.socket);
+    }
+  });
+  it('rejects a TCP response with the right ID but a different question', async () => {
+    const upstream = await listenTcpUpstream(false, true);
+    const proxy = new DnsFilterProxy({
+      listenAddress: '127.0.0.1', listenPort: 0,
+      upstream: {host: '127.0.0.1', port: upstream.port},
+      blocklistPath: 'unused', blocklistFormat: 'domains', timeoutMs: 1000, logBlocked: false,
+    }, new Blocklist([]));
+    try {
+      await startProxy(proxy);
+      const reply = await sendTcpQuery(proxy.getListenPort(), queryFor('original.example.test', 45));
+      expect(reply.readUInt16BE(2) & 15).toBe(2);
+    } finally { await stopProxy(proxy); await closeServer(upstream.server); }
+  });
 });

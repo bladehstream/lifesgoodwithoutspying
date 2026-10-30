@@ -21,6 +21,9 @@ fi
 
 exec >>"$LOG" 2>&1
 echo "==== apply $(date) ===="
+# Record the settings this run applies. Saving a toggle does not apply it, so
+# status compares this copy with the saved settings to report pending changes.
+cat "$CONF" > "$CONF_APPLIED" 2>/dev/null || : > "$CONF_APPLIED"
 
 BLOCKDIR="$DIR/blocklist.d"
 DNS_FILTER_INIT="$DIR/nospy-dns-filter.sh"
@@ -53,9 +56,10 @@ collect_domains() {
     domain_keys > "$KEYS_TMP"
     while IFS= read -r key; do
         if [ "$key" = domains.sdp ] && [ "$mode" = initial ]; then
-            # Enabled SDP is held back for the grace period; disabled SDP is
-            # included immediately with the other categories.
-            is_on "$key" && continue
+            # Disabled SDP never contributes domains. Enabled SDP is held back
+            # for the grace period, unless the NTP clock is on: then SDP is not
+            # needed for the time, so it is blocked immediately.
+            is_on "$key" && is_on clock.ntp || continue
         else
             is_on "$key" || continue
         fi
@@ -174,7 +178,9 @@ schedule_sdp_block() {
         elif [ "$(append_sdp_domains)" -gt 0 ] 2>/dev/null; then
             echo "[+] SDP domains blocked after ${CLOCK_SYNC_DELAY}s clock-sync grace period"
             if append_sdp_dns_artifact "$token"; then
-                if is_on dns.filter && [ -x "$DNS_FILTER_INIT" ]; then
+                # A filter still waiting for the network loads this list when
+                # it starts, so only a running one needs a reload.
+                if is_on dns.filter && [ -x "$DNS_FILTER_INIT" ] && [ -f "$DNS_FILTER_STATE" ]; then
                     "$DNS_FILTER_INIT" reload || echo "[-] DNS filter reload failed after SDP update"
                 fi
             else
@@ -210,7 +216,7 @@ apply_hosts() {
     count="$(grep -c . "$DOMAINS_TMP" 2>/dev/null)"
     [ -n "$count" ] || count=0
     sdp_pending=0
-    is_on domains.sdp && sdp_pending=1
+    is_on domains.sdp && ! is_on clock.ntp && sdp_pending=1
     generation="$(date +%s)-$$"
 
     if [ "$count" -eq 0 ] && [ "$sdp_pending" -eq 0 ]; then
@@ -258,7 +264,43 @@ dns_filter_ipv6_mode() {
     fi
 }
 
+# The handoff needs an active ConnMan service, and at boot Wi-Fi can take
+# longer to connect than the handoff waits. Keep trying in the background for
+# up to 10 minutes rather than leaving the filter off until the next apply. A
+# newer apply or a disable replaces or removes the token, which stops this
+# worker.
+schedule_dns_filter_retry() {
+    token="$(date +%s)-$$"
+    echo "$token" > "$DNS_RETRY_TOKEN"
+    (
+        trap - EXIT HUP INT TERM
+        trap '' HUP
+        waited=0
+        while [ "$waited" -lt 600 ]; do
+            sleep 10
+            waited=$((waited + 10))
+            [ "$(cat "$DNS_RETRY_TOKEN" 2>/dev/null)" = "$token" ] || exit 0
+            is_on dns.filter || break
+            out="$(NOSPY_DNS_IPV6_MODE="$(dns_filter_ipv6_mode)" "$DNS_FILTER_INIT" enable 2>&1)"
+            rc=$?
+            [ "$rc" -eq 75 ] && continue
+            [ -n "$out" ] && printf '%s\n' "$out"
+            if [ "$rc" -eq 0 ]; then
+                echo "[+] DNS filter started after waiting ${waited}s for the network"
+            else
+                # Anything other than "no network yet" will not fix itself.
+                echo "[-] DNS filter could not start"
+            fi
+            break
+        done
+        [ "$waited" -lt 600 ] || echo "[-] no usable network after 600s; DNS filter left off"
+        [ "$(cat "$DNS_RETRY_TOKEN" 2>/dev/null)" = "$token" ] && rm -f "$DNS_RETRY_TOKEN"
+    ) &
+    echo "[~] no network yet; the DNS filter will start in the background once it is up"
+}
+
 apply_dns_filter() {
+    rm -f "$DNS_RETRY_TOKEN"
     if [ -f "$DNS_FILTER_STATE" ] && [ ! -x "$DNS_FILTER_INIT" ]; then
         echo "[-] DNS handoff state exists but its rollback script is missing"
         return 1
@@ -271,10 +313,23 @@ apply_dns_filter() {
         # Reconfigure the complete handoff when either companion setting changes.
         # The nameserver is always part of the handoff; only IPv6 is optional.
         if [ -f "$DNS_FILTER_STATE" ]; then
+            # Same IPv6 mode as the running handoff: only the blocklist can have
+            # changed, and the helper reloads that in place. Restarting the
+            # handoff costs several seconds, so do that only when the reload
+            # fails (e.g. the helper is not running after a reboot).
+            if [ "$(sed -n 's/^IPV6_MODE=//p' "$DNS_FILTER_STATE")" = "$(dns_filter_ipv6_mode)" ] &&
+                "$DNS_FILTER_INIT" reload 2>/dev/null; then
+                return 0
+            fi
             "$DNS_FILTER_INIT" disable || return 1
         fi
         NOSPY_DNS_IPV6_MODE="$(dns_filter_ipv6_mode)" "$DNS_FILTER_INIT" enable
-        return $?
+        rc=$?
+        if [ "$rc" -eq 75 ]; then
+            schedule_dns_filter_retry
+            return 0
+        fi
+        return "$rc"
     fi
 
     if [ -f "$DNS_FILTER_STATE" ] && [ -x "$DNS_FILTER_INIT" ]; then
@@ -403,6 +458,48 @@ apply_lan() {
     fi
 }
 
+# Set the clock from NTP instead of LG's SDP X-Server-Time header. At boot the
+# network may not be up yet, so retry in the background for up to 10 minutes.
+# A newer apply or a disable replaces or removes the token, which stops this
+# worker.
+apply_clock() {
+    if ! is_on clock.ntp; then
+        rm -f "$NTP_TOKEN"
+        return 0
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        echo "[-] NTP clock needs node, which this TV lacks; clock left alone"
+        return 0
+    fi
+    token="$(date +%s)-$$"
+    echo "$token" > "$NTP_TOKEN"
+    (
+        trap - EXIT HUP INT TERM
+        trap '' HUP
+        attempt=0
+        while [ "$attempt" -lt 60 ]; do
+            [ "$(cat "$NTP_TOKEN" 2>/dev/null)" = "$token" ] || exit 0
+            seconds="$(bounded node "$DIR/nospy-ntp.js" 2>/dev/null)"
+            if [ -n "$seconds" ]; then
+                offset=$(($(date +%s) - seconds))
+                if [ "$offset" -ge -2 ] && [ "$offset" -le 2 ]; then
+                    echo "[~] clock already matches NTP (off by ${offset}s)"
+                elif how="$(set_clock "$seconds")"; then
+                    echo "[+] clock set from NTP via $how (was off by ${offset}s)"
+                else
+                    echo "[-] NTP answered but the clock could not be set"
+                fi
+                [ "$(cat "$NTP_TOKEN" 2>/dev/null)" = "$token" ] && rm -f "$NTP_TOKEN"
+                exit 0
+            fi
+            sleep 10
+            attempt=$((attempt + 1))
+        done
+        echo "[-] no NTP answer after $attempt attempts; clock left alone"
+    ) &
+    echo "[~] setting the clock from NTP in the background"
+}
+
 apply_purge() {
     if is_on purge.boot; then
         purge_residue
@@ -418,6 +515,7 @@ elif [ -f "$DNS_FILTER_STATE" ] && [ -x "$DNS_FILTER_INIT" ]; then
     echo "[-] domain generation failed; stopping the DNS handoff to avoid stale rules"
     "$DNS_FILTER_INIT" disable || dns_filter_ok=0
 fi
+apply_clock
 apply_ads
 apply_voice
 apply_thinq
