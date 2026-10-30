@@ -148,16 +148,22 @@ NOSPY_MARKER="# lifesgoodwithoutspying - blocked LG ad/ACR/telemetry endpoints"
 
 # A pending SDP grace-period update is identified by a token so an older
 # delayed worker cannot modify a newer hosts file after a re-apply or disable.
-pending_hosts_current() {
+#
+# pending_read loads the worker's pid and token into pending_pid and
+# pending_token; it fails when there is no pending update.
+pending_read() {
     [ -f "$HOSTS_PENDING" ] || return 1
     read -r pending_pid pending_token < "$HOSTS_PENDING"
+}
+
+pending_hosts_current() {
+    pending_read || return 1
     [ -n "$pending_pid" ] && [ "$pending_token" = "$1" ] || return 1
     kill -0 "$pending_pid" 2>/dev/null
 }
 
 pending_hosts_clear() {
-    [ -f "$HOSTS_PENDING" ] || return 0
-    read -r pending_pid pending_token < "$HOSTS_PENDING"
+    pending_read || return 0
     [ "$pending_token" = "$1" ] && rm -f "$HOSTS_PENDING"
     return 0
 }
@@ -167,8 +173,7 @@ pending_hosts_cancel() {
 }
 
 hosts_pending() {
-    [ -f "$HOSTS_PENDING" ] || return 1
-    read -r pending_pid pending_token < "$HOSTS_PENDING"
+    pending_read || return 1
     [ -n "$pending_pid" ] && [ -n "$pending_token" ] || return 1
     kill -0 "$pending_pid" 2>/dev/null
 }
@@ -189,6 +194,25 @@ hosts_state() {
     else
         echo "external"
     fi
+}
+
+# Seconds left in the SDP grace period. Measured from the worker's start in
+# /proc, which keeps counting while the grace period sets the wall clock.
+# Clock ticks are taken as 100 a second, as on every webOS kernel.
+hosts_wait_seconds() {
+    hosts_pending || { echo 0; return 0; }
+    awk -v delay="$CLOCK_SYNC_DELAY" -v stat="/proc/$pending_pid/stat" '
+        BEGIN {
+            if ((getline up < "/proc/uptime") <= 0 || (getline st < stat) <= 0) { print 0; exit }
+            # The fields after "pid (comm) " start at field 3, so starttime
+            # (field 22) is the 20th.
+            sub(/^.*\) /, "", st)
+            split(st, f, " ")
+            left = delay - (up - f[20] / 100)
+            if (left < 0) left = 0
+            if (left > delay) left = delay
+            printf "%d\n", left + 0.999
+        }'
 }
 
 # BusyBox's timeout takes the duration as a bare SECS argument in 1.35 (webOS 9)
@@ -480,16 +504,6 @@ kill_by_paths() {
     [ -n "$pids" ] || return 0
     kill -KILL $pids 2>/dev/null
     echo "[+] stopped target pid(s): $pids"
-}
-
-# Count live processes whose exact exe path is listed in the given file.
-count_running_paths() {
-    list="$1"
-    [ -f "$list" ] || { echo 0; return 0; }
-    proc_exe_table | awk -v list="$list" '
-        BEGIN { while ((getline line < list) > 0) want[line] = 1; close(list) }
-        $2 in want { n++ }
-        END { print n + 0 }'
 }
 
 # Print the state of every executable the service toggles target, one line

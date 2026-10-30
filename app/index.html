@@ -8,125 +8,202 @@
 </head>
 <body>
   <main class="app" id="app">
-    <header class="masthead">
-      <h1>Life's Good Without Spying</h1>
-      <div class="device"><span class="tag" id="dev-root" data-i18n="tag.checking">checking</span></div>
-    </header>
+    <h1>Life's Good Without Spying</h1>
 
-    <section class="hero">
-      <div class="signal" aria-hidden="true"><span class="bars"></span><span class="scan"></span></div>
-
-      <p class="verdict" id="verdict" data-i18n="verdict.checking">Checking…</p>
-      <p class="explain" id="explain" data-i18n="explain.checking">Reading the TV's state.</p>
-
-      <button id="btn-main" class="primary" autofocus data-i18n="button.enable">Enable protection</button>
-
-      <dl class="readout">
-        <div><dt data-i18n="readout.domains">Domain entries</dt><dd id="r-domains">—</dd></div>
-        <div><dt data-i18n="readout.hosts">Domain sink</dt><dd id="r-hosts">—</dd></div>
-        <div><dt data-i18n="readout.dns">DNS filter</dt><dd id="r-dns">—</dd></div>
-        <div><dt data-i18n="readout.ipv6">DNS IPv6 mode</dt><dd id="r-ipv6">—</dd></div>
-        <div><dt data-i18n="readout.voice">Voice services</dt><dd id="r-voice">—</dd></div>
-        <div><dt data-i18n="readout.ads">Ad services</dt><dd id="r-ads">—</dd></div>
-      </dl>
+    <section class="hero solo" id="hero">
+      <div class="lead">
+        <p class="verdict" id="verdict" data-i18n="verdict.checking">Checking…</p>
+        <p class="why" id="why" hidden></p>
+        <p class="facts" id="facts" hidden></p>
+        <div class="progress" id="progress" hidden></div>
+        <div class="actions">
+          <button id="btn-main" class="primary" hidden data-i18n="button.enable">Enable protection</button>
+          <button id="btn-retry" hidden data-i18n="button.checkAgain">Check again</button>
+          <button id="btn-openlog" hidden data-i18n="button.openLog">Open log</button>
+        </div>
+      </div>
+      <div class="status" id="status" hidden>
+        <div class="srow">
+          <span class="k" data-i18n="status.services">Services</span>
+          <div class="groups" id="groups"></div>
+        </div>
+        <div class="srow">
+          <span class="k" data-i18n="status.hostnames">Hostnames</span>
+          <div class="cells">
+            <span data-cell="domains.acr" data-i18n="cell.domains.acr">ACR</span>
+            <span data-cell="domains.smartad" data-i18n="cell.domains.smartad">SmartAd</span>
+            <span data-cell="domains.dashboard" data-i18n="cell.domains.dashboard">Home recs</span>
+            <span data-cell="domains.telemetry" data-i18n="cell.domains.telemetry">Telemetry</span>
+            <span data-cell="domains.sdp" data-i18n="cell.domains.sdp">LG platform</span>
+            <span data-cell="domains.wiselg" data-i18n="cell.domains.wiselg">App usage</span>
+            <span data-cell="domains.thinq" data-i18n="cell.domains.thinq">ThinQ</span>
+            <span data-cell="domains.lgrecommends" data-i18n="cell.domains.lgrecommends">Content Store</span>
+            <span data-cell="domains.lgchannels" data-i18n="cell.domains.lgchannels">LG Channels</span>
+            <span data-cell="domains.quickset" data-i18n="cell.domains.quickset">Remote codes</span>
+            <span data-cell="domains.updates" data-i18n="cell.domains.updates">Updates</span>
+          </div>
+        </div>
+        <div class="srow">
+          <span class="k" data-i18n="status.dnsClock">DNS &amp; clock</span>
+          <div class="cells">
+            <span data-cell="dns.filter" data-i18n="cell.dns.filter">DNS filter</span>
+            <span data-cell="dns.disable_ipv6" data-i18n="cell.ipv6Off">IPv6 off</span>
+            <span data-cell="clock.ntp" data-i18n="cell.clock.ntp">NTP clock</span>
+            <span data-cell="purge.boot" data-i18n="cell.purge.boot">Boot purge</span>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <section class="tools">
-      <button id="btn-purge" data-i18n="button.purge">Purge now</button>
-      <button id="btn-selftest" data-i18n="button.selftest">Self-test</button>
-      <button id="btn-refresh" data-i18n="button.refresh">Refresh</button>
-      <button id="btn-log" data-i18n="button.showLog">Show log</button>
-      <button id="btn-language">Language: Auto</button>
-    </section>
+    <div class="body">
+      <nav class="rail">
+        <button class="sel" data-pane="net"><span data-i18n="rail.hostnames">Hostnames</span><span class="n" data-count="net"></span></button>
+        <button data-pane="svc"><span data-i18n="rail.services">Services</span><i class="dot" id="svc-dot" hidden></i><span class="n" data-count="svc"></span></button>
+        <button data-pane="res"><span data-i18n="rail.dnsClock">DNS &amp; clock</span><span class="n" data-count="res"></span></button>
+        <button data-pane="log"><span data-i18n="rail.log">Log</span></button>
+      </nav>
 
-    <section class="stage">
-      <section class="layers" id="layers">
-        <h2 data-i18n="heading.protections">Protections</h2>
-        <div class="layer-grid">
-          <button class="layer" data-key="domains.acr" role="switch" aria-checked="false">
+      <section class="pane" id="pane-net">
+        <p class="note" data-i18n="note.hostnames">Blocking a hostname stops uploads to it. It doesn't stop the TV collecting data.</p>
+        <div class="grid">
+          <button class="item" data-key="domains.acr" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.acr.title">ACR / Alphonso</b><small data-i18n="layer.domains.acr.detail">Blocks automatic content-recognition uploads</small></span>
+            <span class="text"><b data-i18n="item.domains.acr.title">ACR / Alphonso</b><small data-i18n="item.domains.acr.detail">Content recognition</small></span>
           </button>
-          <button class="layer" data-key="domains.smartad" role="switch" aria-checked="false">
+          <button class="item" data-key="domains.smartad" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.smartad.title">SmartAd &amp; ad platform</b><small data-i18n="layer.domains.smartad.detail">Blocks ad delivery and tracking</small></span>
+            <span class="text"><b data-i18n="item.domains.smartad.title">SmartAd</b></span>
           </button>
-          <button class="layer" data-key="domains.quickset" role="switch" aria-checked="false">
+          <button class="item" data-key="domains.dashboard" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.quickset.title">QuickSet remote codes</b><small data-i18n="layer.domains.quickset.detail">Optional. Blocks remote-code lookup; may affect remote setup</small></span>
+            <span class="text"><b data-i18n="item.domains.dashboard.title">Home recommendations</b></span>
           </button>
-          <button class="layer" data-key="domains.dashboard" role="switch" aria-checked="false">
+          <button class="item" data-key="domains.telemetry" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.dashboard.title">Home dashboard &amp; recs</b><small data-i18n="layer.domains.dashboard.detail">Blocks recommendation telemetry</small></span>
+            <span class="text"><b data-i18n="item.domains.telemetry.title">Telemetry &amp; crash reports</b></span>
           </button>
-          <button class="layer" data-key="domains.lgrecommends" role="switch" aria-checked="false">
+          <button class="item" data-key="domains.sdp" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.lgrecommends.title">LG Content Store</b><small data-i18n="layer.domains.lgrecommends.detail">Optional. Blocks the LG Content Store and its app recommendations; the store will not open</small></span>
+            <span class="text"><b data-i18n="item.domains.sdp.title">LG service platform</b><small id="sdp-detail" data-i18n="item.domains.sdp.detail">Blocked 60 s after boot so the clock can sync. Turn on NTP in DNS &amp; clock to block it from boot.</small></span>
+            <span class="breaks" data-i18n="item.domains.sdp.breaks">Breaks Content Store</span>
           </button>
-          <button class="layer" data-key="domains.wiselg" role="switch" aria-checked="false">
+        </div>
+        <h3 data-i18n="heading.optional">Optional</h3>
+        <div class="grid">
+          <button class="item" data-key="domains.wiselg" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.wiselg.title">Home app sessions</b><small data-i18n="layer.domains.wiselg.detail">Optional. Blocks app-usage uploads; may break Home previews, sports and channel info</small></span>
+            <span class="text"><b data-i18n="item.domains.wiselg.title">App usage uploads</b></span>
+            <span class="breaks" data-i18n="item.domains.wiselg.breaks">Breaks Home previews</span>
           </button>
-          <button class="layer" data-key="domains.telemetry" role="switch" aria-checked="false">
+          <button class="item" data-key="domains.thinq" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.telemetry.title">Telemetry &amp; crash uploads</b><small data-i18n="layer.domains.telemetry.detail">Blocks crash and APM phone-home</small></span>
+            <span class="text"><b data-i18n="item.domains.thinq.title">ThinQ</b><small data-i18n="item.domains.thinq.detail">Also stops the ThinQ services</small></span>
+            <span class="breaks" data-i18n="item.domains.thinq.breaks">Breaks ThinQ app</span>
           </button>
-          <button class="layer" data-key="domains.sdp" role="switch" aria-checked="false">
+          <button class="item" data-key="domains.lgrecommends" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.sdp.title">LG SDP &amp; clock sync</b><small data-i18n="layer.domains.sdp.detail">Blocks SDP after a 60-second clock-sync grace period; breaks the LG Content Store</small></span>
+            <span class="text"><b data-i18n="item.domains.lgrecommends.title">Content Store</b></span>
+            <span class="breaks" data-i18n="item.domains.lgrecommends.breaks">Breaks Content Store</span>
           </button>
-          <button class="layer" data-key="clock.ntp" role="switch" aria-checked="false">
+          <button class="item" data-key="domains.lgchannels" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.clock.ntp.title">Clock from NTP</b><small data-i18n="layer.clock.ntp.detail">Optional. Sets the time from pool.ntp.org, so SDP is blocked from boot with no grace period</small></span>
+            <span class="text"><b data-i18n="item.domains.lgchannels.title">LG Channels</b></span>
+            <span class="breaks" data-i18n="item.domains.lgchannels.breaks">Breaks LG Channels</span>
           </button>
-          <button class="layer" data-key="dns.filter" role="switch" aria-checked="false">
+          <button class="item" data-key="domains.quickset" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.dns.filter.title">Local DNS filter</b><small data-i18n="layer.dns.filter.detail">Routes ConnMan IPv4 DNS through the local helper; IPv6 is a separate companion choice</small></span>
+            <span class="text"><b data-i18n="item.domains.quickset.title">Remote code lookup</b></span>
+            <span class="breaks" data-i18n="item.domains.quickset.breaks">Breaks Remote setup</span>
           </button>
-          <button class="layer" data-key="dns.disable_ipv6" role="switch" aria-checked="false">
+          <button class="item" data-key="domains.updates" role="switch" aria-checked="false">
             <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.dns.disable_ipv6.title">Disable IPv6 with DNS filter</b><small data-i18n="layer.dns.disable_ipv6.detail">Companion switch; turns ConnMan IPv6 off only while the DNS filter is enabled. If off, IPv6 DNS may bypass the helper.</small></span>
-          </button>
-          <button class="layer" data-key="voice.stop" role="switch" aria-checked="false">
-            <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.voice.stop.title">Voice services</b><small data-i18n="layer.voice.stop.detail">Stops the LG mic, wake-word and voice app (Breaks remote voice key)</small></span>
-          </button>
-          <button class="layer" data-key="ads.stop" role="switch" aria-checked="false">
-            <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.ads.stop.title">Ad services</b><small data-i18n="layer.ads.stop.detail">Stops ad, ACR and telemetry daemons</small></span>
-          </button>
-          <button class="layer" data-key="lan.block" role="switch" aria-checked="false">
-            <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.lan.block.title">LAN discovery</b><small data-i18n="layer.lan.block.detail">Block LAN discovery. May break casting</small></span>
-          </button>
-          <button class="layer" data-key="domains.thinq" role="switch" aria-checked="false">
-            <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.thinq.title">ThinQ &amp; companion</b><small data-i18n="layer.domains.thinq.detail">Optional. Stops ThinQ/Alexa/IoT daemons and breaks the LG ThinQ app</small></span>
-          </button>
-          <button class="layer" data-key="purge.boot" role="switch" aria-checked="false">
-            <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.purge.boot.title">Purge on boot</b><small data-i18n="layer.purge.boot.detail">Clear ACR and voice data at startup</small></span>
-          </button>
-          <button class="layer" data-key="domains.lgchannels" role="switch" aria-checked="false">
-            <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.lgchannels.title">LG Channels</b><small data-i18n="layer.domains.lgchannels.detail">Optional. breaks the LG Channels app</small></span>
-          </button>
-          <button class="layer" data-key="domains.updates" role="switch" aria-checked="false">
-            <span class="sw" aria-hidden="true"></span>
-            <span class="layer-text"><b data-i18n="layer.domains.updates.title">Firmware updates</b><small data-i18n="layer.domains.updates.detail">Optional. Blocks updates and fixes. <br />Can be handled by the Homebrew Channel</small></span>
+            <span class="text"><b data-i18n="item.domains.updates.title">Firmware updates</b></span>
+            <span class="breaks" data-i18n="item.domains.updates.breaks">Breaks Updates</span>
           </button>
         </div>
       </section>
 
-      <div class="logview" id="logview" hidden>
-        <h2 data-i18n="heading.log">Log</h2>
+      <section class="pane" id="pane-svc" hidden>
+        <button class="item svc" data-key="voice.stop" data-group="voice" role="switch" aria-checked="false">
+          <span class="top">
+            <span class="sw" aria-hidden="true"></span>
+            <span class="text"><b data-i18n="item.voice.stop.title">Voice</b></span>
+            <span class="breaks" data-i18n="item.voice.stop.breaks">Breaks Voice button</span>
+            <span class="state"></span>
+          </span>
+          <span class="procs"></span>
+        </button>
+        <button class="item svc" data-key="ads.stop" data-group="ads" role="switch" aria-checked="false">
+          <span class="top">
+            <span class="sw" aria-hidden="true"></span>
+            <span class="text"><b data-i18n="item.ads.stop.title">Ads &amp; ACR</b></span>
+            <span class="state"></span>
+          </span>
+          <span class="procs"></span>
+        </button>
+        <button class="item svc" data-key="domains.thinq" data-group="thinq" role="switch" aria-checked="false">
+          <span class="top">
+            <span class="sw" aria-hidden="true"></span>
+            <span class="text"><b data-i18n="item.domains.thinq.title">ThinQ</b><small data-i18n="item.domains.thinq.svcDetail">Also blocks the ThinQ hostnames</small></span>
+            <span class="breaks" data-i18n="item.domains.thinq.breaks">Breaks ThinQ app</span>
+            <span class="state"></span>
+          </span>
+          <span class="procs"></span>
+        </button>
+        <button class="item svc" data-key="lan.block" data-group="lan" role="switch" aria-checked="false">
+          <span class="top">
+            <span class="sw" aria-hidden="true"></span>
+            <span class="text"><b data-i18n="item.lan.block.title">LAN discovery</b></span>
+            <span class="breaks" data-i18n="item.lan.block.breaks">Breaks Casting</span>
+            <span class="state"></span>
+          </span>
+          <span class="procs"></span>
+        </button>
+      </section>
+
+      <section class="pane" id="pane-res" hidden>
+        <div class="grid">
+          <button class="item" data-key="dns.filter" role="switch" aria-checked="false">
+            <span class="sw" aria-hidden="true"></span>
+            <span class="text"><b data-i18n="item.dns.filter.title">DNS filter</b><small data-i18n="item.dns.filter.detail">Catches lookups that skip the hosts file</small></span>
+          </button>
+          <button class="item" data-key="dns.disable_ipv6" role="switch" aria-checked="false">
+            <span class="sw" aria-hidden="true"></span>
+            <span class="text"><b data-i18n="item.dns.disable_ipv6.title">Turn off IPv6</b><small data-i18n="item.dns.disable_ipv6.detail">Without this, IPv6 lookups skip the DNS filter</small></span>
+          </button>
+          <button class="item" data-key="clock.ntp" role="switch" aria-checked="false">
+            <span class="sw" aria-hidden="true"></span>
+            <span class="text"><b data-i18n="item.clock.ntp.title">Set clock from NTP</b><small data-i18n="item.clock.ntp.detail">Lets LG's service platform be blocked from boot</small></span>
+          </button>
+          <button class="item" data-key="purge.boot" role="switch" aria-checked="false">
+            <span class="sw" aria-hidden="true"></span>
+            <span class="text"><b data-i18n="item.purge.boot.title">Delete ACR and voice data at boot</b></span>
+          </button>
+        </div>
+      </section>
+
+      <section class="pane pane-log" id="pane-log" hidden>
         <section class="console" id="console" tabindex="0" role="log" aria-label="Log output" data-i18n-label="label.logOutput">
           <pre id="out"></pre>
         </section>
-      </div>
-    </section>
+      </section>
+    </div>
+
+    <footer class="tools">
+      <button id="btn-purge" data-i18n="button.purge">Purge now</button>
+      <button id="btn-selftest" data-i18n="button.selftest">Self-test</button>
+      <span class="device">
+        <i class="dot" id="root-dot"></i><span id="root-text" data-i18n="footer.checking">Checking</span>
+        <span id="webos-version" hidden></span>
+        <span id="app-version" hidden></span>
+        <button id="btn-language" class="lang">Language: Auto</button>
+      </span>
+    </footer>
   </main>
   <script src="i18n.js"></script>
+  <script src="tv.js"></script>
+  <script src="status.js"></script>
+  <script src="nav.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

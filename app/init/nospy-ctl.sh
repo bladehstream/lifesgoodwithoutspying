@@ -63,6 +63,26 @@ dns_filter_field() {
     dns_filter_status | sed -n "s/^$1=//p" | head -n 1
 }
 
+# One selftest line per service group, from proc_states output on stdin,
+# naming the listed processes that are running or couldn't be checked.
+# proc.<group>.<name>=<state> lines come first, then <group>=<state>.
+selftest_processes() {
+    awk -F= '
+        $1 ~ /^proc\./ {
+            key = $1
+            sub(/^proc\./, "", key)
+            group = substr(key, 1, index(key, ".") - 1)
+            seen[group] = 1
+            if ($2 == "running" || $2 == "unknown") names[group, $2] = names[group, $2] " " substr(key, index(key, ".") + 1)
+            next
+        }
+        $1 in seen {
+            if ($2 == "running") print "  " $1 ": running (protection NOT active):" names[$1, "running"]
+            else if ($2 == "unknown") print "  " $1 ": unknown (process scan failed):" names[$1, "unknown"]
+            else print "  " $1 ": stopped"
+        }'
+}
+
 # Background jobs.
 #
 # enable, disable and apply used to run the whole apply inside the Homebrew
@@ -232,7 +252,9 @@ case "$1" in
             echo "autostart=off"
         fi
         echo "job=$(job_state)"
-        echo "hosts=$(hosts_state)"
+        hosts="$(hosts_state)"
+        echo "hosts=$hosts"
+        [ "$hosts" = waiting ] && echo "hosts_wait=$(hosts_wait_seconds)"
         echo "blocklist=$(blocklist_count)"
         dns_filter_load
         echo "dns_filter=$(dns_filter_runtime)"
@@ -242,7 +264,16 @@ case "$1" in
         echo "dns_filter_ipv6_mode=$(dns_filter_field handoff_ipv6_mode)"
         echo "connman_ipv6=$(dns_filter_field connman_ipv6)"
         echo "stubs=$(stub_count)"
-        conf_effective "$CONF"
+        # The saved settings: bare for older frontends, and as saved.<key> so
+        # the UI can tell settings apart from other on/off lines.
+        conf_effective "$CONF" > "$TMP.conf"
+        cat "$TMP.conf"
+        sed 's/^/saved./' "$TMP.conf"
+        # The settings the last apply used, so the UI can mark each unapplied
+        # change. There is no file until the first apply.
+        if [ -f "$CONF_APPLIED" ]; then
+            conf_effective "$CONF_APPLIED" | sed 's/^/applied./'
+        fi
         # Also prints voice= and ads=, which older frontends read.
         proc_states "$TMP.proc"
         ;;
@@ -329,24 +360,10 @@ case "$1" in
         echo "  ad.lgsmartad.com  http=${code:-none}  curl_rc=$rc"
         echo "  NOTE: curl also uses the mounted /etc/hosts; this is not a TV process test."
         echo
-        echo "== voice processes (effective protection check) =="
-        voice_execs > "$TMP.voice"
-        if [ "$(count_running_paths "$TMP.voice")" -gt 0 ]; then
-            echo "  voice: running (protection NOT active)"
-        else
-            echo "  voice: stopped"
-        fi
-        rm -f "$TMP.voice"
+        echo "== listed processes (effective protection check) =="
+        proc_states "$TMP.proc" | selftest_processes
         echo
-        echo "== ACR / ad services (effective protection check) =="
-        ads_execs > "$TMP.ads"
-        if [ "$(count_running_paths "$TMP.ads")" -gt 0 ]; then
-            echo "  ad processes: running (protection NOT active)"
-        else
-            echo "  ad processes: stopped"
-        fi
-        rm -f "$TMP.ads"
-        echo "  Luna bus entries:"
+        echo "== ACR / ad services on the Luna bus =="
         ls-monitor -l 2>/dev/null | grep -iE 'service\.acr|service\.livepick|colorInfoMiner|service\.admanager|service\.adoverlay|service\.tvdataexchang|acr2|nudge|rdxd|uploadd|sportsalarm' | grep -vi 'wowplay' || echo "  (none)"
         echo
         echo "== buffered ACR / voice residue files =="
