@@ -496,10 +496,8 @@ purge_residue() {
 # Succeeds only if the clock ends up within 10 seconds of the target.
 set_clock() {
     target="$1"
-    if command -v luna-send >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
-        bounded script -q -c \
-            "luna-send -n 1 -f luna://com.webos.service.systemservice/time/setSystemTime '{\"utc\":$target}'" \
-            /dev/null >/dev/null 2>&1
+    if luna_call luna://com.webos.service.systemservice/time/setSystemTime \
+        "{\"utc\":$target}" >/dev/null; then
         clock_close_to "$target" && { echo luna; return 0; }
     fi
     date -u -s "@$target" >/dev/null 2>&1
