@@ -161,6 +161,10 @@ and the main button cycles Enable / Update / Disable.
   Direct DNS, DNS-over-TLS/HTTPS, and custom resolvers remain outside its
   scope; if the helper exits, the handoff fails closed until re-applied or
   rolled back.
+- **DNS helper limits:** the optional helper checks the requested name but does
+  not inspect CNAME targets returned for allowed names. Its locally generated
+  blocked-name replies omit EDNS options, including DNS COOKIEs; some clients
+  that require them may retry or fail. See `dns-filter/README.md` for details.
 - You don't need the update block option if you've got the option set in the Homebrew Channel.
 - Font licences: (Chivo, IBM Plex Mono, OFL: see `app/fonts/`).
 
