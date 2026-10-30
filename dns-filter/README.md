@@ -146,6 +146,16 @@ IPv6 DHCP nameserver and IPv6 DNS can bypass the IPv4 helper.
 
 ## Deliberate limitations
 
+The helper filters the requested name, not CNAME targets in the upstream
+answer. An allowed name can therefore return an address for a blocked alias
+without a separate query for that blocked name. Domain filtering cannot
+establish that an application will not reach a blocked service.
+
+Locally synthesized errors, including blocked-name NXDOMAIN replies, may omit the
+query's EDNS OPT record and its options. In particular, a client that requires
+DNS COOKIE responses can discard those replies. This may cause retries or a
+lookup failure; it is not evidence that every TV client uses DNS COOKIEs.
+
 The Node helper does not replace ConnMan and is not a firewall by itself. It
 cannot block DNS-over-TLS, DNS-over-HTTPS, direct-IP connections, or a process
 that uses a custom encrypted resolver. If the helper exits unexpectedly while
