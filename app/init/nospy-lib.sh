@@ -374,6 +374,73 @@ count_running_paths() {
         END { print n + 0 }'
 }
 
+# Read-only status for known executable paths. Failures must not be reported
+# as stopped. This does not establish complete process or sensor coverage.
+process_inventory_state() {
+    list="$1"
+    stat_root="${2:-/proc}"
+    [ -s "$list" ] || { echo unknown; return 0; }
+    listing_ok=1
+    listing="$(ls -l /proc/[0-9]*/exe 2>/dev/null)" || listing_ok=0
+    [ -n "$listing" ] || { echo unknown; return 0; }
+    state="$(printf '%s\n' "$listing" | awk -v list="$list" -v root="$stat_root" -v listing_ok="$listing_ok" '
+        # Linux PF_KTHREAD is 0x00200000 in the task flags field.
+        # Unknown or unreadable entries remain unknown, never "stopped".
+        function is_kernel_thread(pid, path, stat, fields, n, rc) {
+            sub(/^\/proc\//, "", pid); sub(/\/exe$/, "", pid)
+            path = root "/" pid "/stat"
+            rc = (getline stat < path); close(path)
+            if (rc != 1 || !sub(/^.*\) /, "", stat)) return -1
+            n = split(stat, fields, / +/)
+            if (n < 7 || fields[7] !~ /^[0-9]+$/) return -1
+            return int(fields[7] / 2097152) % 2
+        }
+        # Jailed executables may outlive deletion or be invisible to the
+        # filesystem glob. Compare a standard jail path to the canonical
+        # target, and treat unusual nested paths as uncertain.
+        function jail_match(path, relative, candidate) {
+            if (path !~ /^\/var\/palm\/jail\//) return 0
+            relative = path
+            if (!sub(/^\/var\/palm\/jail\/[^\/]+/, "", relative)) return -1
+            if (relative in want) return 1
+            for (candidate in want) {
+                if (candidate ~ /^\/usr\/(sbin|bin)\// &&
+                    length(relative) > length(candidate) &&
+                    substr(relative, length(relative) - length(candidate) + 1) == candidate)
+                    return -1
+            }
+            return 0
+        }
+        BEGIN {
+            while ((getline line < list) > 0) { want[line] = 1; targets++ }
+            close(list)
+            if (!targets) exit 1
+        }
+        {
+            target = ""; pid_field = ""
+            for (i = 1; i <= NF; i++) {
+                if ($i == "->") target = $(i + 1)
+                else if ($i ~ /^\/proc\/[0-9]+\/exe$/) pid_field = $i
+            }
+            if (pid_field == "") { bad = 1; next }
+            if (target == "") {
+                if (is_kernel_thread(pid_field) != 1) bad = 1
+                next
+            }
+            seen++
+            jail = jail_match(target)
+            if ((target in want) || jail == 1) running++
+            else if (jail == -1) bad = 1
+        }
+        END {
+            if (running) { print "running"; exit }
+            if (bad || !seen || !targets || !listing_ok) exit 1
+            print "stopped"
+        }
+    ')" || { echo unknown; return 0; }
+    case "$state" in running|stopped) echo "$state" ;; *) echo unknown ;; esac
+}
+
 # Delete locally buffered ACR / speech-to-text files. Our own scratch files are
 # excluded by name: they live in /tmp and match "voice", so without this a
 # concurrent apply would delete the list a running status call is reading.

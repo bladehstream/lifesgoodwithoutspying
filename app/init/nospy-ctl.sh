@@ -67,6 +67,13 @@ is_known_key() {
     return "$found"
 }
 
+# Status-only output: an early write error must not be hidden by a later
+# successful printf. Keep the wrapper inside a subshell so apply is unchanged.
+status_write_targets() (
+    printf() { command printf "$@" || exit 1; }
+    "$1"
+)
+
 case "$1" in
     enable)
         mkdir -p "$INITD"
@@ -135,17 +142,15 @@ case "$1" in
             echo "$key=$(conf_get "$key")"
         done < "$TMP"
         rm -f "$TMP"
-        voice_execs > "$TMP.voice"
-        ads_execs > "$TMP.ads"
-        if [ "$(count_running_paths "$TMP.voice")" -gt 0 ]; then
-            echo "voice=running"
+        if status_write_targets voice_execs > "$TMP.voice"; then
+            echo "voice=$(process_inventory_state "$TMP.voice")"
         else
-            echo "voice=stopped"
+            echo "voice=unknown"
         fi
-        if [ "$(count_running_paths "$TMP.ads")" -gt 0 ]; then
-            echo "ads=running"
+        if status_write_targets ads_execs > "$TMP.ads"; then
+            echo "ads=$(process_inventory_state "$TMP.ads")"
         else
-            echo "ads=stopped"
+            echo "ads=unknown"
         fi
         rm -f "$TMP.voice" "$TMP.ads"
         ;;
@@ -232,21 +237,27 @@ case "$1" in
         echo "  NOTE: curl also uses the mounted /etc/hosts; this is not a TV process test."
         echo
         echo "== voice processes (effective protection check) =="
-        voice_execs > "$TMP.voice"
-        if [ "$(count_running_paths "$TMP.voice")" -gt 0 ]; then
-            echo "  voice: running (protection NOT active)"
-        else
-            echo "  voice: stopped"
+        voice_state=unknown
+        if status_write_targets voice_execs > "$TMP.voice"; then
+            voice_state="$(process_inventory_state "$TMP.voice")"
         fi
+        case "$voice_state" in
+            running) echo "  voice: listed process running" ;;
+            stopped) echo "  voice: no listed process observed" ;;
+            *) echo "  voice: process scan unavailable" ;;
+        esac
         rm -f "$TMP.voice"
         echo
         echo "== ACR / ad services (effective protection check) =="
-        ads_execs > "$TMP.ads"
-        if [ "$(count_running_paths "$TMP.ads")" -gt 0 ]; then
-            echo "  ad processes: running (protection NOT active)"
-        else
-            echo "  ad processes: stopped"
+        ads_state=unknown
+        if status_write_targets ads_execs > "$TMP.ads"; then
+            ads_state="$(process_inventory_state "$TMP.ads")"
         fi
+        case "$ads_state" in
+            running) echo "  ad processes: listed process running" ;;
+            stopped) echo "  ad processes: no listed process observed" ;;
+            *) echo "  ad processes: process scan unavailable" ;;
+        esac
         rm -f "$TMP.ads"
         echo "  Luna bus entries:"
         ls-monitor -l 2>/dev/null | grep -iE 'service\.acr|service\.livepick|colorInfoMiner|service\.admanager|service\.adoverlay|service\.tvdataexchang|acr2|nudge|rdxd|uploadd|sportsalarm' | grep -vi 'wowplay' || echo "  (none)"

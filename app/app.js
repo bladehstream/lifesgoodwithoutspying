@@ -157,11 +157,19 @@
     }
     function parseStatus(text) {
         var map = {};
+        var invalidStatus = false;
         (text || '').split('\n').forEach(function (line) {
             var i = line.indexOf('=');
-            if (i > 0)
-                map[line.slice(0, i)] = line.slice(i + 1).trim();
+            if (i > 0) {
+                var key = line.slice(0, i);
+                var scalar = ['autostart', 'changes', 'hosts', 'blocklist', 'voice', 'ads',
+                    'voice.stop', 'ads.stop', 'dns.filter', 'dns.disable_ipv6', 'dns_filter'];
+                if (scalar.indexOf(key) !== -1 && Object.prototype.hasOwnProperty.call(map, key))
+                    invalidStatus = true;
+                map[key] = line.slice(i + 1).trim();
+            }
         });
+        map._invalidStatus = invalidStatus;
         return map;
     }
     function toArray(list) {
@@ -219,8 +227,8 @@
                     (dnsRuntime === 'no' ? 'value.pending' : 'value.unavailable')) : 'value.off');
         setText(document.getElementById('r-ipv6'),
             !dnsEnabled ? 'value.notManaged' : (dnsIpv6Disabled ? 'value.disabled' : 'value.preserved'));
-        setText(document.getElementById('r-voice'), map.voice === 'stopped' ? 'value.stopped' : 'value.running');
-        setText(document.getElementById('r-ads'), map.ads === 'stopped' ? 'value.stopped' : 'value.running');
+        setText(document.getElementById('r-voice'), map.voice === 'stopped' ? 'value.stopped' : (map.voice === 'running' ? 'value.running' : 'value.unavailable'));
+        setText(document.getElementById('r-ads'), map.ads === 'stopped' ? 'value.stopped' : (map.ads === 'running' ? 'value.running' : 'value.unavailable'));
         var verdict = document.getElementById('verdict');
         var explain = document.getElementById('explain');
         verdict.classList.remove('is-secure', 'is-warn', 'is-danger');
@@ -253,6 +261,22 @@
             else if (map['dns.filter'] === 'on' && map['dns.disable_ipv6'] === 'off') {
                 setText(verdict, 'verdict.dnsIpv4');
                 setText(explain, 'explain.dnsIpv4');
+                verdict.classList.add('is-warn');
+                appEl.classList.add('secured', 'pending');
+            }
+            else if (map._invalidStatus ||
+                (map.changes !== 'none' && map.changes !== 'pending') ||
+                ['ours', 'waiting', 'open', 'external'].indexOf(map.hosts) === -1 ||
+                (map['dns.filter'] !== 'on' && map['dns.filter'] !== 'off') ||
+                (map['dns.filter'] === 'on' && map['dns.disable_ipv6'] !== 'on' && map['dns.disable_ipv6'] !== 'off') ||
+                (map['voice.stop'] !== 'on' && map['voice.stop'] !== 'off') ||
+                (map['ads.stop'] !== 'on' && map['ads.stop'] !== 'off') ||
+                (map['voice.stop'] === 'on' && map.voice !== 'stopped') ||
+                (map['ads.stop'] === 'on' && map.ads !== 'stopped') ||
+                !/^[0-9]+$/.test(map.blocklist || '') ||
+                (Number(map.blocklist) > 0 && map.hosts !== 'ours' && map.hosts !== 'waiting')) {
+                setText(verdict, 'verdict.statusAttention');
+                setText(explain, 'explain.statusAttention');
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
             }

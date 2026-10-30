@@ -40,6 +40,12 @@ TVs: ad delivery, Automatic Content Recognition, and always-on voice capture.
 - Optionally swaps `/usr/sbin/upnpd` for an inert stub, killing UPnP
   discovery both ways (breaks casting to the TV too).
 - Wipes locally buffered ACR / speech-to-text files.
+- **Process status is limited.** The voice and ad readouts check listed
+  executable paths only. Kernel-thread entries without executables are skipped;
+  a detectable scan failure is reported as unavailable.
+  An enabled control with a running listed process needs attention. A clean
+  check does not establish that every microphone, camera, capture path, or
+  process is covered; results depend on the model, permissions, and timing.
 - Re-applies everything at boot through a Homebrew Channel `init.d` hook.
 - Optional local DNS filtering routes ConnMan's IPv4 resolver through a
   reversible helper using the same marked domain list. A separate companion
