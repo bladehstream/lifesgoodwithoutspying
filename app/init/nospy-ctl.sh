@@ -2,12 +2,12 @@
 # lifesgoodwithoutspying control helper.
 #
 # Usage:
-#   nospy-ctl.sh enable|disable|apply|purge|status|log|joblog
+#   nospy-ctl.sh enable|disable|apply|purge|status|log|job|joblog
 #   nospy-ctl.sh set <key> on|off   (saves only; run apply to use it)
 #   nospy-ctl.sh get <key>
 #
 # enable, disable and apply start a background job and return at once;
-# poll "status" for job=running|done|failed.
+# poll "job" (or "status") for job=running|done|failed.
 
 INITD="/var/lib/webosbrew/init.d"
 LINK="$INITD/50-lifesgoodwithoutspying"
@@ -40,13 +40,18 @@ blocklist_count() {
 DNS_STATUS_CACHE=""
 DNS_STATUS_LOADED=0
 
-dns_filter_status() {
-    if [ "$DNS_STATUS_LOADED" -eq 0 ]; then
-        if [ -x "$DIR/nospy-dns-filter.sh" ]; then
-            DNS_STATUS_CACHE="$("$DIR/nospy-dns-filter.sh" status 2>/dev/null)"
-        fi
-        DNS_STATUS_LOADED=1
+# Ask the helper once (about 0.6s on a TV). Call this in the main shell before
+# reading fields: they run inside $(...), where a filled cache is thrown away.
+dns_filter_load() {
+    [ "$DNS_STATUS_LOADED" -eq 0 ] || return 0
+    if [ -x "$DIR/nospy-dns-filter.sh" ]; then
+        DNS_STATUS_CACHE="$("$DIR/nospy-dns-filter.sh" status 2>/dev/null)"
     fi
+    DNS_STATUS_LOADED=1
+}
+
+dns_filter_status() {
+    dns_filter_load
     printf '%s\n' "$DNS_STATUS_CACHE"
 }
 
@@ -113,7 +118,10 @@ job_start() {
     # the Homebrew Channel keeps waiting for them to close. No setsid: it forks
     # when called from a process-group leader (an SSH shell), and $! would
     # then name a pid that exits at once while the job is still running.
-    sh "$SELF" run-job "$1" </dev/null >>"$LOG" 2>&1 &
+    # The Homebrew Channel runs us with LD_PRELOAD=libsystrim.so.3, which makes
+    # every process the job starts about 2.5 times slower to launch (and stops
+    # BusyBox timeout working); the job does not need it.
+    LD_PRELOAD= sh "$SELF" run-job "$1" </dev/null >>"$LOG" 2>&1 &
     printf '%s %s\n' "$!" "$1" > "$JOB_STATE"
     echo "job=started"
 }
@@ -174,6 +182,11 @@ case "$1" in
         fi
         exit "$rc"
         ;;
+    job)
+        # The job line of status alone. The app polls this while a job runs:
+        # a full status costs a few seconds of CPU that the job would share.
+        echo "job=$(job_state)"
+        ;;
     joblog)
         # Everything since the newest job marker: the job plus the apply or
         # remove output it produced.
@@ -221,6 +234,7 @@ case "$1" in
         echo "job=$(job_state)"
         echo "hosts=$(hosts_state)"
         echo "blocklist=$(blocklist_count)"
+        dns_filter_load
         echo "dns_filter=$(dns_filter_runtime)"
         echo "dns_filter_generation=$(dns_filter_field loaded_generation)"
         echo "dns_filter_rules=$(dns_filter_field loaded_rules)"
@@ -228,11 +242,7 @@ case "$1" in
         echo "dns_filter_ipv6_mode=$(dns_filter_field handoff_ipv6_mode)"
         echo "connman_ipv6=$(dns_filter_field connman_ipv6)"
         echo "stubs=$(stub_count)"
-        conf_keys > "$TMP"
-        while IFS= read -r key; do
-            echo "$key=$(conf_get "$key")"
-        done < "$TMP"
-        rm -f "$TMP"
+        conf_effective "$CONF"
         voice_execs > "$TMP.voice"
         ads_execs > "$TMP.ads"
         if [ "$(count_running_paths "$TMP.voice")" -gt 0 ]; then
@@ -256,6 +266,7 @@ case "$1" in
         echo "== DNS filter (ConnMan handoff) =="
         if is_on dns.filter; then
             echo "configured=on"
+            dns_filter_load
             echo "runtime: $(dns_filter_runtime)"
             echo "handoff IPv6 mode: $(dns_filter_field handoff_ipv6_mode)"
             echo "loaded generation: $(dns_filter_field loaded_generation)"
@@ -362,7 +373,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "usage: $0 enable|disable|apply|purge|status|selftest|log|joblog|set <key> on|off|get <key>" >&2
+        echo "usage: $0 enable|disable|apply|purge|status|selftest|log|job|joblog|set <key> on|off|get <key>" >&2
         exit 2
         ;;
 esac
