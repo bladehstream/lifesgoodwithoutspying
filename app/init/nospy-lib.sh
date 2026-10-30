@@ -496,12 +496,14 @@ purge_residue() {
 # Succeeds only if the clock ends up within 10 seconds of the target.
 set_clock() {
     target="$1"
-    if command -v luna-send >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
-        bounded script -q -c \
-            "luna-send -n 1 -f luna://com.webos.service.systemservice/time/setSystemTime '{\"utc\":$target}'" \
-            /dev/null >/dev/null 2>&1
+    started="$(uptime_seconds)"
+    if luna_call luna://com.webos.service.systemservice/time/setSystemTime \
+        "{\"utc\":$target}" >/dev/null; then
         clock_close_to "$target" && { echo luna; return 0; }
     fi
+    # setSystemTime can take seconds to answer (3 on webOS 4.4 during an
+    # apply), so move the target on by that much before setting it directly.
+    target=$((target + $(uptime_seconds) - started))
     date -u -s "@$target" >/dev/null 2>&1
     clock_close_to "$target" && { echo date; return 0; }
     return 1
@@ -511,6 +513,12 @@ clock_close_to() {
     now="$(date +%s)"
     diff=$((now - $1))
     [ "$diff" -ge -10 ] && [ "$diff" -le 10 ]
+}
+
+# Whole seconds since boot. Unlike date, setting the clock doesn't move it.
+uptime_seconds() {
+    read -r up _ < /proc/uptime
+    echo "${up%.*}"
 }
 
 # Make one luna call and print its reply. luna-send answers directly on webOS
