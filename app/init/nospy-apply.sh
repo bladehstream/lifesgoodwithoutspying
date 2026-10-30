@@ -11,13 +11,7 @@ LOG="/var/lib/webosbrew/lifesgoodwithoutspying.log"
 # Homebrew Channel captures nothing from init.d scripts, so log ourselves.
 mkdir -p /var/lib/webosbrew 2>/dev/null || true
 
-# Log trimming
-if [ -f "$LOG" ]; then
-    size="$(wc -c < "$LOG" 2>/dev/null | tr -d '[:space:]')"
-    if [ -n "$size" ] && [ "$size" -gt 65536 ]; then
-        tail -n 200 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
-    fi
-fi
+log_trim "$LOG"
 
 exec >>"$LOG" 2>&1
 echo "==== apply $(date) ===="
@@ -37,6 +31,9 @@ APPS_TMP="/tmp/lifesgoodwithoutspying.apps.$$"
 # Scratch files are per-run and multi-megabyte-free, but never cleaned before;
 # remove them however we exit.
 trap 'rm -f "$DOMAINS_TMP" "$KEYS_TMP" "$UNITS_TMP" "$EXECS_TMP" "$APPS_TMP" "$DNS_BLOCKLIST.tmp.$$" "$DNS_BLOCKLIST.sdp.$$"' EXIT
+# An untrapped SIGTERM (the job cap's first signal) ends the shell without
+# running the EXIT trap, so turn it into a normal exit.
+trap 'exit 143' INT TERM
 
 # Remove only our mounts from /etc/hosts
 # webosbrew (and potentially other apps) may have mounts on this
@@ -354,24 +351,22 @@ apply_stub_category() {
 
     if ! is_on "$key"; then
         stub_clear_key "$key"
-        if command -v systemctl >/dev/null 2>&1; then
+        if has_unit_manager; then
             "$unit_fn" > "$UNITS_TMP"
             while IFS= read -r unit; do
                 [ -n "$unit" ] || continue
-                # --no-block: these units take the full 90s stop/start timeout
-                # otherwise, which would stall the whole apply.
-                systemctl --no-block start "$unit" >/dev/null 2>&1
+                unit_ctl start "$unit"
             done < "$UNITS_TMP"
         fi
         echo "[~] $key disabled"
         return 0
     fi
 
-    if command -v systemctl >/dev/null 2>&1; then
+    if has_unit_manager; then
         "$unit_fn" > "$UNITS_TMP"
         while IFS= read -r unit; do
             [ -n "$unit" ] || continue
-            systemctl --no-block stop "$unit" >/dev/null 2>&1
+            unit_ctl stop "$unit"
         done < "$UNITS_TMP"
     fi
 
@@ -450,9 +445,7 @@ apply_lan() {
         echo "[+] killed running upnpd"
     fi
     # the watcher used to keep ssdp down; do it here now.
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl --no-block stop ssdp-discovery-lgtv >/dev/null 2>&1 || true
-    fi
+    unit_ctl stop ssdp-discovery-lgtv || true
     if pkill -9 ssdp 2>/dev/null; then
         echo "[+] killed ssdp"
     fi
