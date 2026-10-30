@@ -143,6 +143,13 @@ and the main button cycles Enable / Update / Disable.
   Telemetry and Home dashboard categories, where they stopped the store opening
   (error 202 or -102). With them in their own category, which defaults off,
   the other categories no longer break the store. The store also needs SDP.
+- **ACR controls have different scopes.** The ACR / Alphonso domain toggle
+  selects known hostnames for the domain sink; it does not stop local capture or
+  discovery. The separate Ad services control targets listed processes,
+  including `acr2` where available, but cannot establish complete coverage on
+  every firmware. LG states that nearby Wi-Fi access-point and signal-strength
+  information may be used for approximate location when ACR is enabled and the
+  relevant agreements are accepted; see its [privacy statement](https://www.lg.com/us/newsroom/corporate/statement-understanding-privacy-on-lg-smart-tvs).
 - **The domain sink is host-based.** The self-test's `getent` and `curl`
   checks only prove that the generated `/etc/hosts` is visible to commands
   using the local resolver. Some webOS services use their own DNS path,
