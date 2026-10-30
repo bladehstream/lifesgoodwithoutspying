@@ -178,8 +178,9 @@ is stopped and reported as failed, so the app never waits forever. Over SSH,
   rolled back.
 - **DNS helper limits:** the optional helper checks the requested name but does
   not inspect CNAME targets returned for allowed names. Its locally generated
-  blocked-name replies omit EDNS options, including DNS COOKIEs; some clients
-  that require them may retry or fail. See `dns-filter/README.md` for details.
+  blocked-name replies carry at most an empty EDNS OPT record, without options
+  such as DNS COOKIEs; some clients that require them may retry or fail. See
+  `dns-filter/README.md` for details.
 - You don't need the update block option if you've got the option set in the Homebrew Channel.
 - Font licences: (Chivo, IBM Plex Mono, OFL: see `app/fonts/`).
 
