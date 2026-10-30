@@ -363,10 +363,7 @@ apply_lan() {
         # Put the real binary back and clear any stub process that outlived its
         # mount. A stub shell still holds the "upnpd" name, so the supervisor
         # would not spawn the real binary until it is gone.
-        upnp_rc=0
-        upnp_unstub || upnp_rc=$?
-        [ "$upnp_rc" != 2 ] || return 1
-        upnp_stub_active && return 1
+        upnp_unstub
         # Ensure discovery is running. Both are cheap when it already is:
         # ssdp_restore is async, and upnp_restore skips the luna ping when a
         # real upnpd is up.
@@ -388,24 +385,21 @@ apply_lan() {
     else
         echo "[~] upnpd stub already mounted"
     fi
-    # Stop only the exact real executable; an existing verified stub is safe.
+    # mount first, then kill: anything forked after this gets the stub.
+    # Children are killed too, so a stub shell's long sleep is not orphaned.
     pids="$(pgrep -x upnpd 2>/dev/null | tr '\n' ' ')"
     if [ -n "$pids" ]; then
-        upnp_stop_ok=1
         for pid in $pids; do
-            if upnp_real_pid_owned "$pid"; then
-                kill -9 "$pid" 2>/dev/null || { kill -0 "$pid" 2>/dev/null && upnp_stop_ok=0; }
-            elif ! upnp_stub_pid_owned "$pid" && kill -0 "$pid" 2>/dev/null; then
-                echo "[-] cannot verify upnpd process $pid; leaving it untouched"
-                upnp_stop_ok=0
-            fi
+            kill_with_children "$pid"
         done
-        [ "$upnp_stop_ok" = 1 ] || return 1
-        echo "[+] stopped verified real upnpd processes"
+        echo "[+] killed running upnpd"
     fi
     # the watcher used to keep ssdp down; do it here now.
     if command -v systemctl >/dev/null 2>&1; then
         systemctl --no-block stop ssdp-discovery-lgtv >/dev/null 2>&1 || true
+    fi
+    if pkill -9 ssdp 2>/dev/null; then
+        echo "[+] killed ssdp"
     fi
 }
 
@@ -427,12 +421,11 @@ fi
 apply_ads
 apply_voice
 apply_thinq
-lan_ok=1
-apply_lan || lan_ok=0
+apply_lan
 apply_purge
 
-if [ "$dns_filter_ok" -ne 1 ] || [ "$lan_ok" -ne 1 ]; then
-    echo "[-] one or more DNS or LAN protection operations failed"
+if [ "$dns_filter_ok" -ne 1 ]; then
+    echo "[-] one or more DNS handoff operations failed"
     exit 1
 fi
 

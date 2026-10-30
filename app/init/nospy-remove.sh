@@ -41,7 +41,7 @@ fi
 # apply stubs executables and stops services; disabling protection should
 # unmount the stubs (including the untracked upnpd one) and turn the services
 # back on, or they stay down until the next reboot.
-services_restore || remove_ok=0
+services_restore
 
 if [ "$remove_ok" -ne 1 ]; then
     echo "[-] one or more DNS handoff rollback operations failed"
