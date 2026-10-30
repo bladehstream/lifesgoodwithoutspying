@@ -310,23 +310,46 @@ has_unit_manager() {
 # exact /proc/<pid>/exe path, so jailed copies count too. Paths that do not
 # exist on a given build are skipped at apply time.
 
-# Candidate paths for one daemon name: the canonical directories plus any
-# per-app jail copy. Jails hardlink the /usr/sbin binaries and a process may run
-# from the jail path rather than the host one, so both need stubbing. Unmatched
-# jail globs stay literal and are skipped by stub_mount's -f test.
-target_paths() {
-    printf '%s\n' "/usr/sbin/$1" "/usr/bin/$1"
-    printf '%s\n' /var/palm/jail/*/usr/sbin/"$1" /var/palm/jail/*/usr/bin/"$1"
+# The executables each service toggle stops, by name. The names are also what
+# status reports, one proc.<group>.<name> line each.
+VOICE_NAMES="voiceinput voiceinput_network voiceinput_preprocessor voiceinput_hidraw voiceinput_sound voiceconductor voiceclick nlpmanager performer"
+ADS_NAMES="admanager livepick acr2 nudge rdxd uploadd sportsalarm adoverlay-service"
+THINQ_NAMES="trigger_thinq trigger_alexa iot-proxy iot-client mqtt-client lg.thinqai.adapter amazon-alexa-adapter amazon-alexa-vsk"
+SERVICE_GROUPS="voice ads thinq lan"
+
+# "<name> <path>" for every executable one group targets. Each name gets the
+# canonical directories plus any per-app jail copy: jails hardlink the /usr/sbin
+# binaries and a process may run from the jail path rather than the host one, so
+# both need stubbing. Unmatched jail globs stay literal and are skipped by
+# stub_mount's -f test. Launchers and copies outside those directories follow.
+group_targets() {
+    case "$1" in
+        voice) names="$VOICE_NAMES" ;;
+        ads) names="$ADS_NAMES" ;;
+        thinq) names="$THINQ_NAMES" ;;
+        # apply_lan stubs only the host binary, with its own script.
+        lan) printf '%s\n' "upnpd /usr/sbin/upnpd"; return 0 ;;
+        *) return 1 ;;
+    esac
+    for name in $names; do
+        for path in "/usr/sbin/$name" "/usr/bin/$name" \
+                    /var/palm/jail/*/usr/sbin/"$name" /var/palm/jail/*/usr/bin/"$name"; do
+            printf '%s %s\n' "$name" "$path"
+        done
+    done
+    case "$1" in
+        voice) printf '%s\n' "app.voice /usr/bin/com.webos.app.voice" ;;
+        # app launchers that fork the daemons above
+        ads) printf '%s\n' "app.livepick /usr/bin/com.webos.app.livepick" \
+                           "app.livepick-full /usr/bin/com.webos.app.livepick-full" ;;
+        # iot-client also runs from its service directory
+        thinq) printf '%s\n' "iot-client /usr/palm/services/com.webos.service.iotclient/iot-client" ;;
+    esac
 }
 
 # Ad / ACR / telemetry executables.
 ads_execs() {
-    for name in admanager livepick acr2 nudge rdxd uploadd sportsalarm \
-                adoverlay-service; do
-        target_paths "$name"
-    done
-    # app launchers that fork the daemons above
-    printf '%s\n' /usr/bin/com.webos.app.livepick /usr/bin/com.webos.app.livepick-full
+    group_targets ads | awk '{ print $2 }'
 }
 
 # Units the ad / telemetry daemons run under.
@@ -336,12 +359,7 @@ ads_units() {
 
 # Voice / wake-word / NLP executables, plus the voice app launcher.
 voice_execs() {
-    for name in voiceinput voiceinput_network voiceinput_preprocessor \
-                voiceinput_hidraw voiceinput_sound voiceconductor voiceclick \
-                nlpmanager performer; do
-        target_paths "$name"
-    done
-    printf '%s\n' /usr/bin/com.webos.app.voice
+    group_targets voice | awk '{ print $2 }'
 }
 
 voice_units() {
@@ -356,12 +374,7 @@ voice_apps() {
 
 # ThinQ / Alexa / IoT executables (acted on only when domains.thinq is on).
 thinq_execs() {
-    for name in trigger_thinq trigger_alexa iot-proxy iot-client mqtt-client \
-                lg.thinqai.adapter amazon-alexa-adapter amazon-alexa-vsk; do
-        target_paths "$name"
-    done
-    # iot-client also runs from its service directory
-    printf '%s\n' /usr/palm/services/com.webos.service.iotclient/iot-client
+    group_targets thinq | awk '{ print $2 }'
 }
 
 thinq_units() {
@@ -477,6 +490,59 @@ count_running_paths() {
         BEGIN { while ((getline line < list) > 0) want[line] = 1; close(list) }
         $2 in want { n++ }
         END { print n + 0 }'
+}
+
+# Print the state of every executable the service toggles target, one line
+# per name, then one line per group:
+#   proc.<group>.<name>=running|stopped|absent|unknown
+#   <group>=running|stopped|unknown
+# running  a live process runs from one of the name's paths
+# stopped  one of its paths exists (our stub counts) and none is running
+# absent   none of its paths exists on this TV
+# unknown  the process table could not be read, so running and stopped can't
+#          be told apart
+# A group is running if any name in it is, else unknown if any name is. One
+# /proc scan serves every group. $1 is a scratch file prefix.
+proc_states() {
+    tmp="$1"
+    for group in $SERVICE_GROUPS; do
+        group_targets "$group" | sed "s/^/$group /"
+    done > "$tmp.targets"
+    # One ls for every candidate path: a shell test per path costs about 0.1s
+    # on a TV with many app jails. ls fails for the paths that don't exist,
+    # which is expected; it still lists the ones that do.
+    awk '{ print $3 }' "$tmp.targets" | xargs ls -d 2>/dev/null > "$tmp.exists" || :
+    # The shell running this is always in the table, so an empty one means the
+    # scan failed, not that nothing runs. A process that exits mid-scan only
+    # drops its own line.
+    scan=ok
+    proc_exe_table > "$tmp.procs" || scan=failed
+    [ -s "$tmp.procs" ] || scan=failed
+    awk -v scan="$scan" -v procs="$tmp.procs" -v exists="$tmp.exists" '
+        BEGIN {
+            if (scan == "ok")
+                while ((getline line < procs) > 0) { split(line, f, " "); run[f[2]] = 1 }
+            while ((getline line < exists) > 0) present[line] = 1
+        }
+        {
+            key = $1 "." $2
+            if (!(key in state)) { order[++n] = key; group[key] = $1; state[key] = "absent" }
+            if (scan == "ok" && ($3 in run)) state[key] = "running"
+            else if (($3 in present) && state[key] == "absent") state[key] = (scan == "ok") ? "stopped" : "unknown"
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                key = order[i]
+                print "proc." key "=" state[key]
+                g = group[key]
+                if (!(g in gstate)) { gorder[++m] = g; gstate[g] = "stopped" }
+                if (state[key] == "running") gstate[g] = "running"
+                else if (state[key] == "unknown" && gstate[g] != "running") gstate[g] = "unknown"
+            }
+            for (j = 1; j <= m; j++) print gorder[j] "=" gstate[gorder[j]]
+        }' "$tmp.targets"
+    echo "proc_scan=$scan"
+    rm -f "$tmp.targets" "$tmp.exists" "$tmp.procs"
 }
 
 # Delete locally buffered ACR / speech-to-text files. Our own scratch files are

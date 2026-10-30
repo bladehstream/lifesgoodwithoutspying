@@ -243,19 +243,8 @@ case "$1" in
         echo "connman_ipv6=$(dns_filter_field connman_ipv6)"
         echo "stubs=$(stub_count)"
         conf_effective "$CONF"
-        voice_execs > "$TMP.voice"
-        ads_execs > "$TMP.ads"
-        if [ "$(count_running_paths "$TMP.voice")" -gt 0 ]; then
-            echo "voice=running"
-        else
-            echo "voice=stopped"
-        fi
-        if [ "$(count_running_paths "$TMP.ads")" -gt 0 ]; then
-            echo "ads=running"
-        else
-            echo "ads=stopped"
-        fi
-        rm -f "$TMP.voice" "$TMP.ads"
+        # Also prints voice= and ads=, which older frontends read.
+        proc_states "$TMP.proc"
         ;;
     selftest)
         echo "== generated host sink (host-side check) =="
