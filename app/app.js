@@ -164,7 +164,8 @@
                 var key = line.slice(0, i);
                 var scalar = ['autostart', 'changes', 'hosts', 'blocklist', 'voice', 'ads',
                     'voice.stop', 'ads.stop', 'dns.filter', 'dns.disable_ipv6', 'dns_filter'];
-                if (scalar.indexOf(key) !== -1 && Object.prototype.hasOwnProperty.call(map, key))
+                if ((scalar.indexOf(key) !== -1 || key === 'domain_lists' || key.indexOf('domains.') === 0) &&
+                    Object.prototype.hasOwnProperty.call(map, key))
                     invalidStatus = true;
                 map[key] = line.slice(i + 1).trim();
             }
@@ -188,6 +189,22 @@
             btn.classList.toggle('on', on);
             btn.setAttribute('aria-checked', on ? 'true' : 'false');
         });
+    }
+    // Compare the list check's configuration snapshot with this status reply.
+    function domainListsMatch(map) {
+        var expected = [];
+        var valid = true;
+        toggleButtons().forEach(function (button) {
+            var key = button.getAttribute('data-key');
+            if (!key || key.indexOf('domains.') !== 0) return;
+            if (map[key] !== 'on' && map[key] !== 'off') valid = false;
+            if (map[key] === 'on') expected.push(key);
+        });
+        if (!valid) return false;
+        expected.sort();
+        if (!expected.length) return map.domain_lists === 'none';
+        if (!/^ok:domains\.[a-zA-Z0-9_.-]+(,domains\.[a-zA-Z0-9_.-]+)*$/.test(map.domain_lists || '')) return false;
+        return map.domain_lists.slice(3).split(',').sort().join(',') === expected.join(',');
     }
     function updateMainButton() {
         var b = document.getElementById('btn-main');
@@ -261,6 +278,12 @@
             else if (map['dns.filter'] === 'on' && map['dns.disable_ipv6'] === 'off') {
                 setText(verdict, 'verdict.dnsIpv4');
                 setText(explain, 'explain.dnsIpv4');
+                verdict.classList.add('is-warn');
+                appEl.classList.add('secured', 'pending');
+            }
+            else if (!domainListsMatch(map)) {
+                setText(verdict, 'verdict.domainAttention');
+                setText(explain, 'explain.domainAttention');
                 verdict.classList.add('is-warn');
                 appEl.classList.add('secured', 'pending');
             }

@@ -74,6 +74,49 @@ status_write_targets() (
     "$1"
 )
 
+# Status checks source availability, not whether rules are applied or complete.
+domain_lists_status() (
+    umask 077
+    work="$(mktemp -d "$TMP.domain.XXXXXX")" || { echo unavailable; return; }
+    keys="$work/keys"
+    config="$work/config"
+    trap 'rm -f "$keys" "$config"; rmdir "$work" 2>/dev/null' EXIT
+    if ! status_write_targets domain_keys > "$keys" || [ ! -s "$keys" ]; then
+        echo unavailable; return
+    fi
+    if [ -L "$CONF" ]; then
+        echo unavailable; return
+    elif [ -e "$CONF" ]; then
+        if [ ! -f "$CONF" ] || [ ! -r "$CONF" ] || ! cat "$CONF" > "$config"; then
+            echo unavailable; return
+        fi
+    elif ! : > "$config"; then
+        echo unavailable; return
+    fi
+    result=none
+    selected=""
+    while IFS= read -r category; do
+        value="$(awk -F= -v k="$category" '
+            $1 == k { n++; value=substr($0, length(k)+2) }
+            END { if (n > 1) exit 1; if (n == 0) print "__unset__"; else print value }
+        ' "$config")" || { result=unavailable; break; }
+        if [ "$value" = __unset__ ]; then
+            value="$(conf_default "$category")" || { result=unavailable; break; }
+        fi
+        case "$value" in off) continue;; on) ;; *) result=unavailable; break;; esac
+        file="$(cat_file_for_key "$category")" || { result=unavailable; break; }
+        list="$DIR/blocklist.d/$file"
+        if [ -z "$file" ] || [ ! -f "$list" ] || [ ! -r "$list" ] ||
+            ! awk '!/^[[:space:]]*#/ && !/^[[:space:]]*$/ { found=1 } END { if (!found) exit 1 }' "$list" 2>/dev/null; then
+            result=unavailable; break
+        fi
+        selected="${selected}${selected:+,}$category"
+        result=ok
+    done < "$keys"
+    rm -f "$keys" "$config"
+    if [ "$result" = ok ]; then echo "ok:$selected"; else echo "$result"; fi
+)
+
 case "$1" in
     enable)
         mkdir -p "$INITD"
@@ -130,6 +173,7 @@ case "$1" in
         fi
         echo "hosts=$(hosts_state)"
         echo "blocklist=$(blocklist_count)"
+        echo "domain_lists=$(domain_lists_status)"
         echo "dns_filter=$(dns_filter_runtime)"
         echo "dns_filter_generation=$(dns_filter_field loaded_generation)"
         echo "dns_filter_rules=$(dns_filter_field loaded_rules)"

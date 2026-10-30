@@ -10,11 +10,11 @@ function section(a, b) {
 const elements = {};
 function el(id) { return elements[id] || (elements[id] = {textContent: '', className: '', classList: {add(){},remove(){}}}); }
 const ctx = {document:{getElementById:el}, appEl:el('app'), enabled:false, dirty:false,
-  setText(element, key){element.textContent=key;}, updateMainButton(){}, invalidateNavigation(){}, Number};
+  setText(element, key){element.textContent=key;}, updateMainButton(){}, invalidateNavigation(){}, toggleButtons(){return [];}, Number};
 vm.createContext(ctx);
-vm.runInContext(section('parseStatus', 'toArray') + section('setTag', 'appIsActive'), ctx);
+vm.runInContext(section('parseStatus', 'toArray') + section('domainListsMatch', 'updateMainButton') + section('setTag', 'appIsActive'), ctx);
 const base = 'autostart=on\nchanges=none\nhosts=ours\nblocklist=2\ndns.filter=off\n' +
-  'voice.stop=on\nads.stop=on\nvoice=stopped\nads=stopped\n';
+  'voice.stop=on\nads.stop=on\nvoice=stopped\nads=stopped\ndomain_lists=none\n';
 function verdict(text) { ctx.dirty = false; ctx.renderState(ctx.parseStatus(text), true); return el('verdict').textContent; }
 if (process.argv[3] === '--stdin') {
   const processStatus = fs.readFileSync(0, 'utf8');
@@ -45,4 +45,13 @@ if (process.argv[3] === '--pr18') {
   ctx.renderState(ctx.parseStatus(base), null);
   assert.strictEqual(el('verdict').textContent, 'verdict.noAnswer');
 }
+// Selected domain list must match the independent settings snapshot.
+ctx.toggleButtons = () => [{getAttribute(){return 'domains.acr';}}];
+const selected = base.replace('domain_lists=none', 'domain_lists=ok:domains.acr') + 'domains.acr=on\n';
+assert.strictEqual(verdict(selected), 'verdict.protected');
+assert.strictEqual(verdict(selected.replace('domain_lists=ok:domains.acr', 'domain_lists=unavailable')), 'verdict.domainAttention');
+assert.strictEqual(verdict(selected.replace('domain_lists=ok:domains.acr', 'domain_lists=none')), 'verdict.domainAttention');
+assert.strictEqual(verdict(selected.replace('domains.acr=on', 'domains.acr=off')), 'verdict.domainAttention');
+assert.strictEqual(verdict(selected + 'domains.acr=on\n'), 'verdict.statusAttention');
+assert.strictEqual(verdict(selected + 'domain_lists=ok:domains.acr\n'), 'verdict.statusAttention');
 console.log('PASS: synthetic process, scan-failure, duplicate and host-state verdicts');

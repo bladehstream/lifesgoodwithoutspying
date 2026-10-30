@@ -46,6 +46,10 @@ TVs: ad delivery, Automatic Content Recognition, and always-on voice capture.
   An enabled control with a running listed process needs attention. A clean
   check does not establish that every microphone, camera, capture path, or
   process is covered; results depend on the model, permissions, and timing.
+- **Domain-list status is limited.** The status screen checks that each
+  selected category file is readable and nonempty. Missing or ambiguous inputs
+  need attention. This does not validate every rule or prove the generated
+  hosts and DNS artifacts are active, complete, or used by all applications.
 - Re-applies everything at boot through a Homebrew Channel `init.d` hook.
 - Optional local DNS filtering routes ConnMan's IPv4 resolver through a
   reversible helper using the same marked domain list. A separate companion
