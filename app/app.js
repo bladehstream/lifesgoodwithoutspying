@@ -1,48 +1,64 @@
-// lifesgoodwithoutspying frontend.
+// lifesgoodwithoutspying frontend: the log, rendering and actions. tv.js talks
+// to the TV, status.js reads its status, nav.js moves focus.
 'use strict';
 
 (function () {
-    var APP_ID = 'ooo.lew.lifesgoodwithoutspying';
-    var HBC = 'luna://org.webosbrew.hbchannel.service';
-    var appEl = document.getElementById('app');
     var consoleEl = document.getElementById('console');
     var out = document.getElementById('out');
-    var logView = document.getElementById('logview');
-    var enabled = false;
-    var dirty = false;
-    var restoreFocus = null;
-    var STATUS_POLL_MS = 5000;
-    var statusPollTimer = null;
-    var lastStatus = null;
-    var navigationRowsCache = null;
-    var logBtn = document.getElementById('btn-log');
     var i18n = window.nospyI18n;
+    var t = i18n.t;
     var setText = i18n.setText;
-    // Cap the retained log; the oldest lines are dropped past this.
-    var MAX_LOG_LINES = 2000;
-    var logLines = [];
+    var status = window.nospyStatus;
+    var nav = window.nospyNav(consoleEl);
+    var tv = window.nospyTv(log, appIsActive);
+
+    // What the TV last told us. root is undefined until checkRoot answers,
+    // then true, false (not rooted) or null (no answer). statusMap is the
+    // raw status, which a local set edits; model is read from it.
+    var root;
+    var statusMap = null;
+    var model = null;
+    var appVersion = '';
+    // An action is running: every button is disabled until it ends.
+    var busy = false;
+    // The main button's job is running, so the hero says "Applying…".
+    var applying = false;
+
     function errmsg(e) {
         return e instanceof Error ? e.message : String(e);
     }
-    function showConsole(show) {
-        logView.hidden = !show;
-        var layers = document.getElementById('layers');
-        if (layers)
-            layers.hidden = show;
-        invalidateNavigation();
-        if (show)
-            scrollConsoleToBottom();
-        if (logBtn)
-            setText(logBtn, show ? 'button.hideLog' : 'button.showLog');
+    function byId(id) {
+        return document.getElementById(id);
     }
+    function each(selector, fn) {
+        Array.prototype.forEach.call(document.querySelectorAll(selector), fn);
+    }
+    function clear(el) {
+        while (el.firstChild)
+            el.removeChild(el.firstChild);
+    }
+    function make(tag, cls, text) {
+        var el = document.createElement(tag);
+        if (cls)
+            el.className = cls;
+        if (text !== undefined)
+            el.textContent = text;
+        return el;
+    }
+
+    // ------------------------------------------------------------ log
+
+    // Cap the retained log; the oldest lines are dropped past this.
+    var MAX_LOG_LINES = 2000;
+    var logLines = [];
     // One text node per line, trimmed to MAX_LOG_LINES, so the buffer is not
     // re-parsed on every append and cannot grow for the whole session.
     function log(line) {
         if (!line && line !== 0)
             return;
         var stick = consoleAtBottom();
-        var t = new Date().toLocaleTimeString();
-        var node = document.createTextNode('[' + t + '] ' + line + '\n');
+        var time = new Date().toLocaleTimeString();
+        var node = document.createTextNode('[' + time + '] ' + line + '\n');
         out.appendChild(node);
         logLines.push(node);
         while (logLines.length > MAX_LOG_LINES) {
@@ -56,391 +72,258 @@
     function maxConsoleScroll() {
         return Math.max(0, consoleEl.scrollHeight - consoleEl.clientHeight);
     }
-    function consoleAtBottom(slack) {
+    function consoleAtBottom() {
         if (consoleEl.clientHeight === 0)
             return true;
-        return consoleEl.scrollTop >= maxConsoleScroll() - (slack || 8);
+        return consoleEl.scrollTop >= maxConsoleScroll() - 8;
     }
     function scrollConsoleToBottom() {
-        if (consoleEl.clientHeight === 0)
-            return;
-        consoleEl.scrollTop = maxConsoleScroll();
-    }
-    // True when the view actually moved, so a keypress at either end of the
-    // buffer can hand focus back to the buttons instead of spinning.
-    function scrollConsoleBy(delta) {
-        var before = consoleEl.scrollTop;
-        consoleEl.scrollTop = before + delta;
-        return consoleEl.scrollTop !== before;
+        if (consoleEl.clientHeight !== 0)
+            consoleEl.scrollTop = maxConsoleScroll();
     }
     // Arriving at the log parks it on the newest line.
-    consoleEl.addEventListener('focus', function () {
-        scrollConsoleToBottom();
-    });
-    // Older webOS engines (Chromium 53 and earlier) let an unreferenced
-    // PalmServiceBridge be collected while its call is in flight, and the reply
-    // is then never delivered. Hold each bridge until it answers.
-    var pendingBridges = {};
-    var nextBridgeId = 0;
-    // Default limit for one Luna call. Past it the UI unlocks instead of
-    // waiting forever.
-    var LUNA_TIMEOUT_MS = 90000;
-    // A failed call carries the service's reply as .data, so callers can tell
-    // an answer of returnValue:false apart from no answer at all (.timedOut).
-    function lunaError(message, data) {
-        var e = new Error(message);
-        e.data = data;
-        return e;
+    consoleEl.addEventListener('focus', scrollConsoleToBottom);
+
+    // ------------------------------------------------------------ timers
+
+    // SDP grace period: status gives the seconds left; count down locally
+    // between polls.
+    var graceDeadline = 0;
+    var graceTimer = null;
+    function graceLeft() {
+        return Math.max(0, Math.ceil((graceDeadline - Date.now()) / 1000));
     }
-    // luna call, returns a promise that resolves to the parsed JSON result
-    function luna(url, params, timeoutMs) {
-        var limit = timeoutMs || LUNA_TIMEOUT_MS;
-        var bridge = null;
-        var bridgeId = null;
-        var call = new Promise(function (resolve, reject) {
-            var Bridge = window.PalmServiceBridge;
-            if (typeof Bridge === 'function') {
-                bridge = new Bridge();
-                bridgeId = nextBridgeId++;
-                pendingBridges[bridgeId] = bridge;
-                bridge.onservicecallback = function (msg) {
-                    delete pendingBridges[bridgeId];
-                    var data;
-                    try {
-                        data = JSON.parse(msg);
-                    }
-                    catch (e) {
-                        data = { raw: msg };
-                    }
-                    if (data && data.returnValue === false) {
-                        reject(lunaError(data.errorText || 'Luna call failed', data));
-                    }
-                    else {
-                        resolve(data);
-                    }
-                };
-                try {
-                    bridge.call(url, JSON.stringify(params || {}));
-                }
-                catch (e) {
-                    delete pendingBridges[bridgeId];
-                    reject(e);
-                }
-                return;
-            }
-            var runtime = window.webOS;
-            if (runtime && runtime.service && runtime.service.request) {
-                var m = url.match(/^luna:\/\/([^/]+)\/(.+)$/);
-                if (!m) {
-                    reject(new Error('bad luna url'));
-                    return;
-                }
-                runtime.service.request('luna://' + m[1], {
-                    method: m[2],
-                    parameters: params || {},
-                    onSuccess: function (r) { resolve(r); },
-                    onFailure: function (e) {
-                        reject(lunaError(e.errorText || 'Luna call failed', e));
-                    }
-                });
-                return;
-            }
-            reject(new Error('No Luna bridge available (not running on webOS?)'));
-        });
-        var timer = null;
-        var timeout = new Promise(function (_resolve, reject) {
-            timer = setTimeout(function () {
-                if (bridgeId !== null) {
-                    delete pendingBridges[bridgeId];
-                    try {
-                        if (bridge.cancel)
-                            bridge.cancel();
-                    }
-                    catch (_error) { }
-                }
-                var e = new Error('No reply from ' + url + ' after ' + (limit / 1000) + 's');
-                e.timedOut = true;
-                reject(e);
-            }, limit);
-        });
-        return Promise.race([call, timeout]).then(function (res) {
-            clearTimeout(timer);
-            return res;
-        }, function (e) {
-            clearTimeout(timer);
-            throw e;
-        });
-    }
-    function delay(ms) {
-        return new Promise(function (resolve) { setTimeout(resolve, ms); });
-    }
-    // The Homebrew Channel service quits after 30s without requests. A call
-    // that reaches it while it is quitting is never answered, and the next one
-    // fails with "Message status unknown" until the hub starts it again (seen
-    // on webOS 4.4). Retry those; a fresh call relaunches the service.
-    var HBC_ATTEMPT_MS = 20000;
-    var HBC_ATTEMPTS = 4;
-    // A call that never reached the service is always safe to send again. One
-    // that timed out may still have run, so it is retried only when the caller
-    // says running it twice is harmless.
-    function callLost(e, repeatable) {
-        if (!e)
-            return false;
-        if (/^(Message status unknown|Service does not exist)/.test(e.message))
-            return true;
-        return !!repeatable && e.timedOut === true;
-    }
-    function hbc(method, params, timeoutMs, repeatable) {
-        var attempt = 0;
-        function once() {
-            attempt++;
-            return luna(HBC + '/' + method, params, timeoutMs || HBC_ATTEMPT_MS).catch(function (e) {
-                if (attempt < HBC_ATTEMPTS && callLost(e, repeatable))
-                    return delay(1000).then(once);
-                throw e;
-            });
+    function updateGrace() {
+        if (model && model.hostsWait !== null)
+            graceDeadline = Date.now() + model.hostsWait * 1000;
+        var waiting = !!model && model.sdpWait;
+        if (waiting && graceTimer === null) {
+            graceTimer = setInterval(function () {
+                if (graceLeft() > 0)
+                    render();
+            }, 1000);
         }
-        return once();
+        else if (!waiting && graceTimer !== null) {
+            clearInterval(graceTimer);
+            graceTimer = null;
+        }
     }
-    // Keep the service from idling out while the app is open, so a click does
-    // not land in the window where it is quitting.
-    var KEEPALIVE_MS = 20000;
-    setInterval(function () {
-        if (appIsActive())
-            luna(HBC + '/checkRoot', {}, HBC_ATTEMPT_MS).catch(function () { });
-    }, KEEPALIVE_MS);
-    function shq(s) {
-        return "'" + String(s).replace(/'/g, "'\\''") + "'";
+
+    // A short confirmation under the verdict, such as after a purge.
+    var flash = null;
+    var flashTimer = null;
+    function showFlash(text) {
+        flash = text;
+        clearTimeout(flashTimer);
+        flashTimer = setTimeout(function () {
+            flash = null;
+            render();
+        }, 4000);
+        render();
     }
-    function exec(command, quiet, timeoutMs, repeatable) {
-        return hbc('exec', { command: command }, timeoutMs, repeatable).then(function (res) {
-            if (!quiet) {
-                var text = (res.stdoutString || '').trim();
-                if (text)
-                    log(text);
-                var err = (res.stderrString || '').trim();
-                if (err)
-                    log('stderr: ' + err);
-            }
-            return res;
-        });
-    }
-    // The folder of an installed app does not move while it runs.
-    var folderPath = null;
-    function getFolder() {
-        if (folderPath)
-            return Promise.resolve(folderPath);
-        return hbc('getAppInfo', { id: APP_ID }, null, true).then(function (res) {
-            if (!res.appInfo || !res.appInfo.folderPath) {
-                throw new Error('Could not resolve app folder path');
-            }
-            folderPath = res.appInfo.folderPath;
-            return folderPath;
-        });
-    }
-    // Read-only actions. Only these are sent again when a reply is lost; the
-    // rest (selftest, purge, set and the job starts) get one longer attempt.
-    var REPEATABLE_ACTIONS = { status: true, job: true, joblog: true, log: true, get: true };
-    function ctl(action, quiet, timeoutMs) {
-        var repeatable = REPEATABLE_ACTIONS[action.split(' ')[0]] === true;
-        var limit = timeoutMs || (repeatable ? HBC_ATTEMPT_MS : LUNA_TIMEOUT_MS);
-        return getFolder().then(function (dir) {
-            return exec('sh ' + shq(dir + '/init/nospy-ctl.sh') + ' ' + action, quiet, limit, repeatable);
-        });
-    }
-    var JOB_POLL_MS = 2000;
-    // Longer than the script's own cap on one job, which kills a stuck stage.
-    var JOB_WAIT_MS = 300000;
-    function showApplying() {
-        setText(document.getElementById('verdict'), 'verdict.applying');
-        setText(document.getElementById('explain'), 'explain.applying');
-    }
-    // enable, disable and apply start a background job on the TV and
-    // return at once. Wait for it, then print what it logged.
-    function waitForJob(deadline) {
-        return delay(JOB_POLL_MS).then(function () {
-            return ctl('job', true);
-        }).then(function (r) {
-            var map = parseStatus(r.stdoutString);
-            if (map.job === 'running') {
-                if (Date.now() > deadline)
-                    throw new Error('Still applying after ' + (JOB_WAIT_MS / 1000) + 's; see "Show log"');
-                return waitForJob(deadline);
-            }
-            return ctl('joblog').then(function () {
-                if (map.job === 'failed')
-                    throw new Error('The change reported a failure; see the log');
-            });
-        });
-    }
-    function waitForIdle(deadline) {
-        return ctl('job', true).then(function (r) {
-            if (parseStatus(r.stdoutString).job !== 'running')
-                return null;
-            if (Date.now() > deadline)
-                throw new Error('Still applying after ' + (JOB_WAIT_MS / 1000) + 's; see "Show log"');
-            return delay(JOB_POLL_MS).then(function () {
-                return waitForIdle(deadline);
-            });
-        });
-    }
-    function job(command) {
-        showApplying();
-        return ctl(command).catch(function (e) {
-            // A job is already running, such as one an earlier session of the
-            // app started. It does not include this change, so let it finish
-            // and then start this one.
-            var stderr = e.data && e.data.stderrString;
-            if (!stderr || stderr.indexOf('another change is still being applied') < 0)
-                throw e;
-            log('waiting for the change already being applied');
-            return waitForIdle(Date.now() + JOB_WAIT_MS).then(function () {
-                return ctl(command);
-            });
-        }).then(function () {
-            return waitForJob(Date.now() + JOB_WAIT_MS);
-        });
-    }
-    function parseStatus(text) {
-        var map = {};
-        (text || '').split('\n').forEach(function (line) {
-            var i = line.indexOf('=');
-            if (i > 0)
-                map[line.slice(0, i)] = line.slice(i + 1).trim();
-        });
-        return map;
-    }
-    function toArray(list) {
-        var arr = [];
-        for (var i = 0; i < list.length; i++)
-            arr.push(list[i]);
-        return arr;
-    }
-    function toggleButtons() {
-        return toArray(document.querySelectorAll('.layer[data-key]'));
-    }
-    function renderToggles(map) {
-        toggleButtons().forEach(function (btn) {
-            var key = btn.getAttribute('data-key');
-            var on = !!key && map[key] === 'on';
-            btn.classList.toggle('on', on);
-            btn.setAttribute('aria-checked', on ? 'true' : 'false');
-        });
-    }
-    function updateMainButton() {
-        var b = document.getElementById('btn-main');
-        if (!b)
+
+    // ------------------------------------------------------------ render
+
+    // Put a string in an element. Lists from status.js are the one special
+    // case: groups become their translated labels, and process names show as
+    // code so they read as identifiers. Everything else goes through i18n.
+    function say(el, key, params) {
+        if (params && params.groups)
+            params = { groups: params.groups.map(function (g) { return t(g.label); }).join(', ') };
+        if (!params || !params.names) {
+            setText(el, key, params);
             return;
-        b.classList.remove('pending', 'danger');
-        if (!enabled) {
-            setText(b, 'button.enable');
         }
-        else if (dirty) {
-            setText(b, 'button.update');
-            b.classList.add('pending');
-        }
-        else {
-            setText(b, 'button.disable');
-            b.classList.add('danger');
+        el.removeAttribute('data-i18n');
+        clear(el);
+        var parts = t(key).split('{names}');
+        for (var i = 0; i < parts.length; i++) {
+            if (i) {
+                params.names.forEach(function (name, j) {
+                    if (j)
+                        el.appendChild(document.createTextNode(', '));
+                    el.appendChild(make('code', '', name));
+                });
+            }
+            el.appendChild(document.createTextNode(parts[i]));
         }
     }
-    function setTag(key, cls) {
-        var tag = document.getElementById('dev-root');
-        setText(tag, key);
-        tag.className = 'tag' + (cls ? ' ' + cls : '');
+    function fact(f) {
+        var span = make('span');
+        span.appendChild(make('i', 'dot ok'));
+        var parts = t(f.key).split('{n}');
+        span.appendChild(document.createTextNode(parts[0]));
+        if (parts.length > 1) {
+            span.appendChild(make('b', '', String(f.n)));
+            span.appendChild(document.createTextNode(parts[1]));
+        }
+        return span;
     }
-    function renderState(map, isRoot) {
-        enabled = map.autostart === 'on';
-        document.getElementById('r-domains').textContent = map.blocklist || '—';
-        setText(document.getElementById('r-hosts'),
-            map.hosts === 'ours' ? 'value.active' :
-            (map.hosts === 'waiting' ? 'value.waiting' :
-            (map.hosts === 'external' ? 'value.other' : 'value.off')));
-        var dnsRuntime = map.dns_filter || 'unavailable';
-        var dnsEnabled = map['dns.filter'] === 'on';
-        var dnsIpv6Disabled = map['dns.disable_ipv6'] === 'on';
-        setText(document.getElementById('r-dns'),
-            dnsEnabled ?
-                (dnsRuntime === 'yes' ? 'value.active' :
-                    (dnsRuntime === 'no' ? 'value.pending' : 'value.unavailable')) : 'value.off');
-        setText(document.getElementById('r-ipv6'),
-            !dnsEnabled ? 'value.notManaged' : (dnsIpv6Disabled ? 'value.disabled' : 'value.preserved'));
-        setText(document.getElementById('r-voice'), map.voice === 'stopped' ? 'value.stopped' : 'value.running');
-        setText(document.getElementById('r-ads'), map.ads === 'stopped' ? 'value.stopped' : 'value.running');
-        var verdict = document.getElementById('verdict');
-        var explain = document.getElementById('explain');
-        verdict.classList.remove('is-secure', 'is-warn', 'is-danger');
-        appEl.classList.remove('secured', 'pending');
-        if (isRoot === null) {
-            // No answer is not the same as "not rooted": the Homebrew Channel
-            // service may be restarting.
-            setTag('tag.noAnswer', 'bad');
-            setText(verdict, 'verdict.noAnswer');
-            setText(explain, 'explain.noAnswer');
-            verdict.classList.add('is-warn');
+    function renderHero(s) {
+        var verdict = byId('verdict'), why = byId('why'), facts = byId('facts');
+        setText(verdict, s.verdict);
+        verdict.className = 'verdict' + (s.cls ? ' ' + s.cls : '');
+        why.className = flash ? 'why ok' : 'why';
+        why.hidden = !flash && !s.why;
+        if (flash) {
+            why.removeAttribute('data-i18n');
+            why.textContent = flash;
         }
-        else if (!isRoot) {
-            setTag('tag.noRoot', 'bad');
-            setText(verdict, 'verdict.noRoot');
-            setText(explain, 'explain.noRoot');
-            verdict.classList.add('is-danger');
+        else if (s.why) {
+            say(why, s.why, s.params);
         }
-        else {
-            setTag('tag.rooted', 'ok');
-            if (map.job === 'running') {
-                // Left running by an earlier session of the app; the poll
-                // above picks up the result.
-                setText(verdict, 'verdict.applying');
-                setText(explain, 'explain.jobRunning');
-                verdict.classList.add('is-warn');
-            }
-            else if (!enabled) {
-                setText(verdict, 'verdict.off');
-                setText(explain, 'explain.off');
-                verdict.classList.add('is-danger');
-            }
-            else if (dirty) {
-                setText(verdict, 'verdict.pending');
-                setText(explain, 'explain.pending');
-                verdict.classList.add('is-warn');
-                appEl.classList.add('secured', 'pending');
-            }
-            else if (map['dns.filter'] === 'on' && map.dns_filter !== 'yes') {
-                setText(verdict, 'verdict.dnsAttention');
-                setText(explain, 'explain.dnsAttention');
-                verdict.classList.add('is-warn');
-                appEl.classList.add('secured', 'pending');
-            }
-            else if (map['dns.filter'] === 'on' && map['dns.disable_ipv6'] === 'off') {
-                setText(verdict, 'verdict.dnsIpv4');
-                setText(explain, 'explain.dnsIpv4');
-                verdict.classList.add('is-warn');
-                appEl.classList.add('secured', 'pending');
-            }
-            else if (map.hosts === 'waiting') {
-                setText(verdict, 'verdict.sdpGrace');
-                setText(explain, 'explain.sdpGrace');
-                verdict.classList.add('is-warn');
-                appEl.classList.add('secured', 'pending');
-            }
-            else {
-                setText(verdict, 'verdict.protected');
-                setText(explain, 'explain.protected');
-                verdict.classList.add('is-secure');
-                appEl.classList.add('secured');
-            }
-        }
-        updateMainButton();
-        invalidateNavigation();
+        clear(facts);
+        facts.hidden = !!flash || !s.facts;
+        if (s.facts)
+            s.facts.forEach(function (f) { facts.appendChild(fact(f)); });
+
+        byId('progress').hidden = !s.busy;
+        var action = status.mainAction(model), main = byId('btn-main');
+        setText(main, action.key);
+        main.className = 'primary' + (action.cls ? ' ' + action.cls : '');
+        main.hidden = !!(s.solo || s.busy);
+        var retry = byId('btn-retry');
+        retry.hidden = !s.retry;
+        if (s.retry)
+            setText(retry, s.retry);
+        byId('btn-openlog').hidden = !s.openLog;
+        [main, retry, byId('btn-openlog')].forEach(function (b) {
+            b.disabled = busy;
+        });
+        byId('hero').className = 'hero' + (s.solo ? ' solo' : '');
+        byId('status').hidden = !!s.solo;
     }
-    // The SDP worker changes the host state asynchronously. Status is not a
-    // free call (the helper inspects the process table), so poll only while an
-    // active app is actually showing that grace-period state.
+    function groupLine(group) {
+        var line = status.groupLine(group), el = make('span', 'st' + (line.cls ? ' ' + line.cls : ''));
+        say(el, line.key, line.params);
+        return el;
+    }
+    // The status column is hidden until there is a status to show.
+    function renderStatus() {
+        var box = byId('groups');
+        clear(box);
+        if (!model)
+            return;
+        model.groups.forEach(function (g) {
+            var el = make('div', 'group');
+            el.appendChild(make('span', 'nm', t(g.label)));
+            var pips = make('span', 'pips');
+            g.procs.forEach(function (p) {
+                pips.appendChild(make('i', 'pip ' + p.pip));
+            });
+            el.appendChild(pips);
+            el.appendChild(groupLine(g));
+            box.appendChild(el);
+        });
+        each('[data-cell]', function (el) {
+            var c = status.cell(model, el.getAttribute('data-cell'), graceLeft());
+            el.className = c.cls;
+            setText(el, c.key, c.params);
+        });
+    }
+    function renderPanes() {
+        var usable = root === true && !!model;
+        each('.item[data-key]', function (btn) {
+            var key = btn.getAttribute('data-key'), on = usable && !!model.saved[key];
+            btn.classList.toggle('on', on);
+            btn.classList.toggle('pend', usable && !!model.dirty[key]);
+            btn.setAttribute('aria-checked', on ? 'true' : 'false');
+            btn.disabled = busy || !usable;
+        });
+        setText(byId('sdp-detail'), usable && model.saved['clock.ntp'] ? 'item.domains.sdp.detailNtp' : 'item.domains.sdp.detail');
+        var groups = {};
+        if (usable)
+            model.groups.forEach(function (g) { groups[g.id] = g; });
+        each('.svc[data-group]', function (card) {
+            var g = groups[card.getAttribute('data-group')];
+            var state = card.querySelector('.state'), procs = card.querySelector('.procs');
+            clear(state);
+            clear(procs);
+            if (!g)
+                return;
+            state.appendChild(groupLine(g));
+            g.procs.forEach(function (p) {
+                var row = make('span', p.pip);
+                row.appendChild(make('i', 'pip ' + p.pip));
+                row.appendChild(document.createTextNode(p.name));
+                procs.appendChild(row);
+            });
+        });
+    }
+    // Each category counts the toggles its own pane holds.
+    function paneKeys(pane) {
+        return Array.prototype.map.call(document.querySelectorAll('#pane-' + pane + ' .item[data-key]'),
+            function (btn) { return btn.getAttribute('data-key'); });
+    }
+    function renderRail() {
+        var usable = root === true && !!model;
+        each('.rail [data-pane]', function (btn) {
+            btn.disabled = busy;
+        });
+        each('[data-count]', function (el) {
+            el.textContent = usable ? t('rail.count', status.onCount(model, paneKeys(el.getAttribute('data-count')))) : '';
+        });
+        var fault = root === true ? status.serviceFault(model) : '';
+        var dot = byId('svc-dot');
+        dot.hidden = !fault;
+        dot.className = 'dot ' + fault;
+    }
+    var ROOT_TEXT = {
+        'true': ['ok', 'footer.rooted'],
+        'false': ['bad', 'footer.noRoot'],
+        'null': ['warn', 'footer.noAnswer'],
+        'undefined': ['', 'footer.checking']
+    };
+    function renderFooter() {
+        var r = ROOT_TEXT[String(root)];
+        byId('root-dot').className = 'dot ' + r[0];
+        setText(byId('root-text'), r[1]);
+        var version = byId('app-version');
+        version.textContent = 'LGWS ' + appVersion;
+        version.hidden = !appVersion;
+        byId('btn-purge').disabled = busy || root !== true;
+        byId('btn-selftest').disabled = busy || root !== true;
+        byId('btn-language').disabled = busy;
+    }
+    function render() {
+        renderHero(status.hero(model, root, applying, graceLeft()));
+        renderStatus();
+        renderPanes();
+        renderRail();
+        renderFooter();
+    }
+
+    // ------------------------------------------------------------ panes
+
+    function showPane(id) {
+        each('.rail [data-pane]', function (btn) {
+            var on = btn.getAttribute('data-pane') === id;
+            btn.classList.toggle('sel', on);
+            byId('pane-' + btn.getAttribute('data-pane')).hidden = !on;
+        });
+        if (id === 'log')
+            scrollConsoleToBottom();
+    }
+    // Moving along the rail switches panes, as TV menus do, so the pane on
+    // the right is always the one the focused category names.
+    each('.rail [data-pane]', function (btn) {
+        var show = function () {
+            showPane(btn.getAttribute('data-pane'));
+        };
+        btn.addEventListener('focus', show);
+        btn.addEventListener('click', show);
+    });
+
+    // ------------------------------------------------------------ refresh
+
+    // Status is not a free call (the helper inspects the process table), so
+    // poll only while an active app shows a state that changes by itself: the
+    // SDP grace period, or a job left running.
+    var STATUS_POLL_MS = 5000;
+    var statusPollTimer = null;
     function appIsActive() {
-        if (document.hidden === true || document.webkitHidden === true ||
-            document.visibilityState === 'hidden')
-            return false;
-        return true;
+        return !(document.hidden === true || document.webkitHidden === true ||
+            document.visibilityState === 'hidden');
     }
     function stopStatusPolling() {
         if (statusPollTimer !== null) {
@@ -450,8 +333,7 @@
     }
     function scheduleStatusPolling() {
         stopStatusPolling();
-        if (!appIsActive() || !lastStatus ||
-            (lastStatus.hosts !== 'waiting' && lastStatus.job !== 'running'))
+        if (!appIsActive() || !model || (!model.sdpWait && !model.jobRunning))
             return;
         statusPollTimer = setTimeout(function () {
             statusPollTimer = null;
@@ -459,10 +341,15 @@
                 refresh({ quiet: true });
         }, STATUS_POLL_MS);
     }
+    function setStatus(map) {
+        statusMap = map;
+        model = map ? status.read(map) : null;
+        updateGrace();
+    }
     function refresh(options) {
         var quiet = !!(options && options.quiet);
         stopStatusPolling();
-        return hbc('checkRoot', {}, null, true).then(function () {
+        return tv.hbc('checkRoot', {}, null, true).then(function () {
             return true;
         }, function (e) {
             // Only a plain returnValue:false answer means "not root".
@@ -470,331 +357,109 @@
                 return false;
             throw e;
         }).then(function (isRoot) {
+            root = isRoot;
             if (!isRoot) {
-                lastStatus = null;
-                renderState({}, false);
+                setStatus(null);
                 return null;
             }
-            return ctl('status', quiet).then(function (r) {
-                var map = parseStatus(r.stdoutString);
-                lastStatus = map;
-                dirty = map.changes === 'pending';
-                renderToggles(map);
-                renderState(map, true);
-                return null;
+            return tv.ctl('status', quiet).then(function (r) {
+                setStatus(tv.parseStatus(r.stdoutString));
             });
         }).catch(function (e) {
             // A quiet poll keeps the last state visible and retries; a manual
-            // refresh retains the existing error state and log behavior.
+            // refresh shows that the TV didn't answer.
             if (!quiet) {
-                lastStatus = null;
-                renderState({}, null);
+                root = null;
+                setStatus(null);
                 log('status: ' + errmsg(e));
             }
-            return null;
-        }).then(function (result) {
+        }).then(function () {
+            render();
             scheduleStatusPolling();
-            return result;
         });
     }
-    function allButtons() {
-        return toArray(document.querySelectorAll('button'));
-    }
-    // lock the ui while something runs, then put focus back
-    function busy(on) {
-        if (on) {
-            stopStatusPolling();
-            restoreFocus = document.activeElement;
-        }
-        allButtons().forEach(function (b) { b.disabled = on; });
-        invalidateNavigation();
-        if (!on) {
-            var target = document.getElementById('btn-main');
-            if (restoreFocus instanceof HTMLButtonElement &&
-                restoreFocus.offsetParent !== null && !restoreFocus.disabled) {
-                target = restoreFocus;
-            }
-            if (target)
-                target.focus();
-            restoreFocus = null;
-            scheduleStatusPolling();
-        }
-    }
-    // run the passed function, refresh after
-    function run(label, fn, then) {
-        busy(true);
+
+    // ------------------------------------------------------------ actions
+
+    // Run one action with every button disabled, then put focus back. A
+    // failure shows the log, and refreshes in case it changed the TV.
+    function run(label, fn, then, isJob) {
+        var restoreFocus = document.activeElement;
+        busy = true;
+        applying = !!isJob;
+        stopStatusPolling();
+        render();
         log('> ' + label);
         return Promise.resolve()
             .then(fn)
             .then(then)
             .catch(function (e) {
                 log('! ' + errmsg(e));
-                showConsole(true);
-                // A failed job may still have changed the TV; show what it left.
+                showPane('log');
                 return refresh();
             })
-            .then(function () { busy(false); });
+            .then(function () {
+                busy = false;
+                applying = false;
+                render();
+                var target = restoreFocus;
+                if (!(target instanceof HTMLElement) || target.offsetParent === null || target.disabled)
+                    target = nav.defaultFocus();
+                nav.focus(target);
+                scheduleStatusPolling();
+            });
     }
-    toggleButtons().forEach(function (btn) {
+    each('.item[data-key]', function (btn) {
         btn.addEventListener('click', function () {
             var key = btn.getAttribute('data-key');
-            if (!key)
-                return;
             var next = btn.classList.contains('on') ? 'off' : 'on';
-            // set only saves the key; "Update protection" (or Enable) applies
-            // every change at once. A status call costs seconds, so update the
-            // view from the last known state instead.
+            // set only saves the key; the main button applies every change at
+            // once. A status call costs seconds, so update the view from the
+            // last known state instead.
             run(key + ' = ' + next, function () {
-                return ctl('set ' + key + ' ' + next, true);
+                return tv.ctl('set ' + key + ' ' + next, true);
             }, function () {
-                if (enabled)
-                    dirty = true;
-                if (!lastStatus)
+                if (!statusMap)
                     return refresh();
-                lastStatus[key] = next;
-                renderToggles(lastStatus);
-                renderState(lastStatus, true);
+                statusMap['saved.' + key] = next;
+                setStatus(statusMap);
             });
         });
     });
-    document.getElementById('btn-main').addEventListener('click', function () {
-        if (!enabled) {
-            run('Enable protection', function () { return job('enable'); }, function () {
-                dirty = false;
-                return refresh();
-            });
-        }
-        else if (dirty) {
-            run('Update protection', function () { return job('apply'); }, function () {
-                dirty = false;
-                return refresh();
-            });
-        }
-        else {
-            run('Disable protection', function () { return job('disable'); }, function () {
-                dirty = false;
-                return refresh();
-            });
-        }
+    byId('btn-main').addEventListener('click', function () {
+        var action = status.mainAction(model);
+        run(action.label, function () { return tv.job(action.command); }, refresh, true);
     });
-    document.getElementById('btn-purge').addEventListener('click', function () {
-        run('Purge ACR and voice residue', function () { return ctl('purge'); }, refresh);
+    byId('btn-purge').addEventListener('click', function () {
+        run('Purge ACR and voice residue', function () { return tv.ctl('purge'); }, function (res) {
+            var m = /purged (\d+)/.exec((res && res.stdoutString) || '');
+            showFlash(m ? t('flash.purged', { n: m[1] }) : t('flash.purgedNone'));
+        });
     });
-    document.getElementById('btn-selftest').addEventListener('click', function () {
-        showConsole(true);
-        run('Self-test', function () { return ctl('selftest'); });
+    byId('btn-selftest').addEventListener('click', function () {
+        showPane('log');
+        run('Self-test', function () { return tv.ctl('selftest'); });
     });
-    document.getElementById('btn-refresh').addEventListener('click', function () {
+    byId('btn-retry').addEventListener('click', function () {
         run('Refresh', refresh);
     });
-    logBtn.addEventListener('click', function () {
-        showConsole(logView.hidden);
+    byId('btn-openlog').addEventListener('click', function () {
+        showPane('log');
+        nav.focus(consoleEl);
     });
-    document.getElementById('btn-language').addEventListener('click', function () {
+    byId('btn-language').addEventListener('click', function () {
         i18n.cycle();
     });
-    // d-pad navigation
-    function invalidateNavigation() {
-        navigationRowsCache = null;
-    }
-    function focusables() {
-        return toArray(document.querySelectorAll('button:not([disabled]), #console'))
-            .filter(function (el) { return el.offsetParent !== null; });
-    }
-    function focusElement(el) {
-        if (!el)
-            return;
-        try {
-            el.focus({ preventScroll: true });
-        }
-        catch (_error) {
-            el.focus();
-        }
-        // The layers list scrolls itself; anything else goes through
-        // scrollIntoView below.
-        var scroller = document.querySelector('.layers');
-        if (scroller && scroller.contains(el)) {
-            var top = el.__nospyNavTop;
-            var bottom = el.__nospyNavBottom;
-            if (typeof top === 'number' && typeof bottom === 'number') {
-                var viewportHeight = scroller.__nospyNavViewportHeight || scroller.clientHeight;
-                var currentTop = scroller.scrollTop;
-                if (top < currentTop)
-                    scroller.scrollTop = top;
-                else if (bottom > currentTop + viewportHeight)
-                    scroller.scrollTop = bottom - viewportHeight;
-            }
-            else {
-                var item = el.getBoundingClientRect();
-                var view = scroller.getBoundingClientRect();
-                if (item.top < view.top)
-                    scroller.scrollTop -= view.top - item.top;
-                else if (item.bottom > view.bottom)
-                    scroller.scrollTop += item.bottom - view.bottom;
-            }
-        }
-        else if (el.scrollIntoViewIfNeeded) {
-            // Chromium before 61 reads scrollIntoView's options object as true
-            // and aligns to the top; this non-standard call scrolls minimally
-            // on every Chromium build.
-            el.scrollIntoViewIfNeeded(false);
-        }
-        else if (el.scrollIntoView) {
-            el.scrollIntoView({ block: 'nearest' });
-        }
-    }
-    function centerX(el) {
-        if (typeof el.__nospyNavCenterX === 'number')
-            return el.__nospyNavCenterX;
-        var r = el.getBoundingClientRect();
-        return r.left + r.width / 2;
-    }
-    // Group buttons into rows once per layout change. Remote navigation then
-    // avoids measuring every button on every key repeat.
-    function layoutRows() {
-        if (navigationRowsCache !== null)
-            return navigationRowsCache;
-        var rows = [];
-        var scroller = document.querySelector('.layers');
-        var scrollerRect = scroller ? scroller.getBoundingClientRect() : null;
-        var scrollTop = scroller ? scroller.scrollTop : 0;
-        if (scroller)
-            scroller.__nospyNavViewportHeight = scroller.clientHeight;
-        focusables().forEach(function (el) {
-            var r = el.getBoundingClientRect();
-            if (scrollerRect) {
-                el.__nospyNavTop = r.top - scrollerRect.top + scrollTop;
-                el.__nospyNavBottom = el.__nospyNavTop + r.height;
-            }
-            el.__nospyNavCenterX = r.left + r.width / 2;
-            var cy = r.top + r.height / 2;
-            var row = null;
-            for (var i = 0; i < rows.length; i++) {
-                if (Math.abs(rows[i].cy - cy) < Math.max(r.height, rows[i].h) / 2) {
-                    row = rows[i];
-                    break;
-                }
-            }
-            if (row) {
-                row.items.push(el);
-            }
-            else {
-                rows.push({ cy: cy, h: r.height, items: [el] });
-            }
-        });
-        rows.sort(function (a, b) { return a.cy - b.cy; });
-        rows.forEach(function (row) {
-            row.items.sort(function (a, b) {
-                return a.__nospyNavCenterX - b.__nospyNavCenterX;
-            });
-        });
-        navigationRowsCache = rows;
-        return rows;
-    }
-    function locate(rows, el) {
-        if (!el)
-            return null;
-        for (var i = 0; i < rows.length; i++) {
-            for (var j = 0; j < rows[i].items.length; j++) {
-                if (rows[i].items[j] === el)
-                    return { row: i, col: j };
-            }
-        }
-        return null;
-    }
-    function moveFocus(dir) {
-        var rows = layoutRows();
-        if (!rows.length)
-            return;
-        var pos = locate(rows, document.activeElement);
-        if (!pos) {
-            focusElement(rows[0].items[0]);
-            return;
-        }
-        var row = rows[pos.row];
-        if (dir === 'left') {
-            if (pos.col > 0)
-                focusElement(row.items[pos.col - 1]);
-            return;
-        }
-        if (dir === 'right') {
-            if (pos.col < row.items.length - 1)
-                focusElement(row.items[pos.col + 1]);
-            return;
-        }
-        var targetRow = rows[pos.row + (dir === 'down' ? 1 : -1)];
-        if (!targetRow)
-            return;
-        // single button row goes to the start of the next row
-        if (row.items.length === 1 || targetRow.items.length === 1) {
-            focusElement(targetRow.items[0]);
-            return;
-        }
-        var active = document.activeElement;
-        var cx = active ? centerX(active) : 0;
-        var best = targetRow.items[0];
-        var bestDist = Infinity;
-        targetRow.items.forEach(function (el) {
-            var d = Math.abs(centerX(el) - cx);
-            if (d < bestDist) {
-                bestDist = d;
-                best = el;
-            }
-        });
-        focusElement(best);
-    }
-    // While the log holds focus the d-pad scrolls it instead of walking the
-    // button grid. The rocker reaches us as plain arrow keys on webOS builds
-    // where the Magic Remote's wheel is not forwarded to the app.
-    function consoleNav(dir) {
-        // The log wraps, so the horizontal axis is free to be the way out, and
-        // the toolbar toggle doubles as the escape once it relabels itself.
-        if (dir === 'left' || dir === 'right') {
-            focusElement(logBtn);
-            return;
-        }
-        // Page by four fifths of the view so pages share some context.
-        var step = Math.max(40, Math.round(consoleEl.clientHeight * 0.8));
-        if (dir === 'down') {
-            scrollConsoleBy(step);
-            return;
-        }
-        if (scrollConsoleBy(-step) || consoleEl.scrollTop > 0)
-            return;
-        focusElement(logBtn);
-    }
-    window.addEventListener('resize', invalidateNavigation, true);
-    document.addEventListener('nospy-language-change', invalidateNavigation);
-    var KEY_DIR = { 37: 'left', 38: 'up', 39: 'right', 40: 'down' };
-    document.addEventListener('keydown', function (e) {
-        var dir = KEY_DIR[e.keyCode];
-        if (dir) {
-            e.preventDefault();
-            if (document.activeElement === consoleEl) {
-                consoleNav(dir);
-                return;
-            }
-            moveFocus(dir);
-            return;
-        }
-        if (e.keyCode === 13 || e.keyCode === 32) {
-            var el = document.activeElement;
-            if (el && el.tagName === 'BUTTON') {
-                e.preventDefault();
-                el.click();
-            }
-        }
-    }, true);
+    document.addEventListener('nospy-language-change', render);
+
+    // ------------------------------------------------------------ lifecycle
+
     // webOS 5-era WebKit uses webkitvisibilitychange; newer engines use the
     // standard event. Stop background work when hidden and re-check on resume.
     function visibilityChanged() {
-        if (appIsActive()) {
-            stopStatusPolling();
+        stopStatusPolling();
+        if (appIsActive())
             refresh({ quiet: true });
-        }
-        else {
-            stopStatusPolling();
-        }
     }
     var visibilityEvent = typeof document.hidden !== 'undefined' ? 'visibilitychange' :
         (typeof document.webkitHidden !== 'undefined' ? 'webkitvisibilitychange' : 'visibilitychange');
@@ -806,12 +471,28 @@
     }, true);
     // The menu language lives in the settings service; navigator.language in
     // the web runtime does not always follow it.
-    luna('luna://com.webos.settingsservice/getSystemSettings', { keys: ['localeInfo'] }).then(function (res) {
+    tv.luna('luna://com.webos.settingsservice/getSystemSettings', { keys: ['localeInfo'] }).then(function (res) {
         var info = res && res.settings && res.settings.localeInfo;
         i18n.setSystemLocale(info && info.locales && info.locales.UI);
     }).catch(function () { });
-    refresh();
-    var main = document.getElementById('btn-main');
-    if (main)
-        main.focus();
+    tv.luna('luna://com.webos.service.tv.systemproperty/getSystemInfo', { keys: ['sdkVersion'] }).then(function (res) {
+        var el = byId('webos-version');
+        if (res && res.sdkVersion) {
+            el.textContent = 'webOS ' + res.sdkVersion;
+            el.hidden = false;
+        }
+    }).catch(function () { });
+    tv.appInfo().then(function (info) {
+        appVersion = info.version || '';
+        render();
+    }, function () { });
+    render();
+    nav.focus(nav.defaultFocus());
+    // Until the first status the hero has no buttons, so focus starts on the
+    // rail; move it to the main button once there is one.
+    refresh().then(function () {
+        var active = document.activeElement;
+        if (nav.zoneOf(active) === null || active === nav.selectedRail())
+            nav.focus(nav.defaultFocus());
+    });
 })();
