@@ -597,7 +597,7 @@ ssdp_restore() {
 # for the stub that is the script name "upnpd", the same as the real binary.
 # The exe link is what tells the two apart.
 upnp_running() {
-    for pid in $(pgrep upnpd 2>/dev/null); do
+    for pid in $(pgrep -x upnpd 2>/dev/null); do
         case "$(readlink "/proc/$pid/exe" 2>/dev/null)" in
             */upnpd) return 0 ;;
         esac
@@ -633,7 +633,7 @@ upnp_unstub() {
             return 1
         fi
     fi
-    for pid in $(pgrep upnpd 2>/dev/null); do
+    for pid in $(pgrep -x upnpd 2>/dev/null); do
         case "$(readlink "/proc/$pid/exe" 2>/dev/null)" in
             */upnpd) ;; # real daemon, leave it alone
             *) kill_with_children "$pid"

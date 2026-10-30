@@ -437,7 +437,7 @@ apply_lan() {
     fi
     # mount first, then kill: anything forked after this gets the stub.
     # Children are killed too, so a stub shell's long sleep is not orphaned.
-    pids="$(pgrep upnpd 2>/dev/null | tr '\n' ' ')"
+    pids="$(pgrep -x upnpd 2>/dev/null | tr '\n' ' ')"
     if [ -n "$pids" ]; then
         for pid in $pids; do
             kill_with_children "$pid"
