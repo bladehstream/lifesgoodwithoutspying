@@ -151,7 +151,7 @@ answer. An allowed name can therefore return an address for a blocked alias
 without a separate query for that blocked name. Domain filtering cannot
 establish that an application will not reach a blocked service.
 
-Locally synthesized errors, including blocked-name NXDOMAIN replies, omit the
+Locally synthesized errors, including blocked-name NXDOMAIN replies, may omit the
 query's EDNS OPT record and its options. In particular, a client that requires
 DNS COOKIE responses can discard those replies. This may cause retries or a
 lookup failure; it is not evidence that every TV client uses DNS COOKIEs.
