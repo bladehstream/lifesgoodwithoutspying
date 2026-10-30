@@ -53,13 +53,6 @@ TVs: ad delivery, Automatic Content Recognition, and always-on voice capture.
 
 ### webOS 4.x
 
-Tested on webOS TV 4.4.3 with BusyBox 1.24.1. A few things work differently there:
-
-- There is no systemd, so services are stopped and started with Upstart's
-  `initctl`. A job your build lacks is skipped.
-- The Homebrew Channel runs commands with `LD_PRELOAD=/usr/lib/libsystrim.so.3`,
-  and under it BusyBox's `timeout` never starts the command. The app falls back
-  to its own watchdog, so one stuck `luna-send` can't stall an apply.
 - The optional DNS filter doesn't work on 4.x yet: it needs `busctl`, which
   4.x lacks. Switching it on reports "missing command: busctl" and the other
   protections still apply.
@@ -67,11 +60,6 @@ Tested on webOS TV 4.4.3 with BusyBox 1.24.1. A few things work differently ther
   Homebrew Channel startup hook
   ([webos-homebrew-channel#124](https://github.com/webosbrew/webos-homebrew-channel/issues/124)).
   Open the app and select "Update protection".
-
-If the app says "Homebrew Channel not responding", select Refresh. The Homebrew
-Channel service quits after 30 seconds idle and can miss a call while it shuts
-down. The app retries and keeps the service awake while it is open, so this
-should be rare.
 
 ## Install
 
