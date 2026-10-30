@@ -68,12 +68,25 @@ is_on() {
 
 # Print every key with the value it has in the given settings file (default
 # when unset), so two files can be compared by what they mean.
+# The file is read once, as status calls this on every poll and a lookup per
+# key costs several processes. As in conf_get, the last line for a key wins and
+# an empty value means the default.
 conf_effective() {
     for key in $(conf_keys); do
-        v="$(grep "^$key=" "$1" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
-        [ -n "$v" ] || v="$(conf_default "$key")"
-        echo "$key=$v"
-    done
+        printf '%s=' "$key"
+        conf_default "$key"
+    done | awk -v file="$1" '
+        BEGIN {
+            while ((getline line < file) > 0) {
+                i = index(line, "=")
+                if (i > 1) value[substr(line, 1, i - 1)] = substr(line, i + 1)
+            }
+        }
+        {
+            key = substr($0, 1, index($0, "=") - 1)
+            if (value[key] != "") print key "=" value[key]
+            else print
+        }'
 }
 
 # Persist a key=value pair.

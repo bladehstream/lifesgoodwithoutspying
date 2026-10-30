@@ -117,7 +117,7 @@ and the main button cycles Enable / Update / Disable.
 Enable, Update and Disable each run as a background job on the TV. The app
 shows "Applying…" until the job ends, then prints its log. A job still running after 240 seconds
 is stopped and reported as failed, so the app never waits forever. Over SSH,
-`nospy-ctl.sh status` shows `job=running|done|failed|idle` and
+`nospy-ctl.sh job` (or `status`) shows `job=running|done|failed|idle` and
 `nospy-ctl.sh joblog` prints the last job's output.
 
 ## Notes

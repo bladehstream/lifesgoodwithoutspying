@@ -240,7 +240,7 @@
     }
     // Read-only actions. Only these are sent again when a reply is lost; the
     // rest (selftest, purge, set and the job starts) get one longer attempt.
-    var REPEATABLE_ACTIONS = { status: true, joblog: true, log: true, get: true };
+    var REPEATABLE_ACTIONS = { status: true, job: true, joblog: true, log: true, get: true };
     function ctl(action, quiet, timeoutMs) {
         var repeatable = REPEATABLE_ACTIONS[action.split(' ')[0]] === true;
         var limit = timeoutMs || (repeatable ? HBC_ATTEMPT_MS : LUNA_TIMEOUT_MS);
@@ -259,7 +259,7 @@
     // return at once. Wait for it, then print what it logged.
     function waitForJob(deadline) {
         return delay(JOB_POLL_MS).then(function () {
-            return ctl('status', true);
+            return ctl('job', true);
         }).then(function (r) {
             var map = parseStatus(r.stdoutString);
             if (map.job === 'running') {
@@ -274,7 +274,7 @@
         });
     }
     function waitForIdle(deadline) {
-        return ctl('status', true).then(function (r) {
+        return ctl('job', true).then(function (r) {
             if (parseStatus(r.stdoutString).job !== 'running')
                 return null;
             if (Date.now() > deadline)
