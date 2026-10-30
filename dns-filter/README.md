@@ -95,6 +95,16 @@ Blank lines and `#` comments are ignored. Plain names match exactly;
 parser extracts the app-generated sink entries instead. Do not include QuickSet
 unless that protection is intentionally enabled.
 
+## Locally blocked DNS replies
+
+A locally blocked name receives a minimal NXDOMAIN. For a single empty
+EDNS(0) OPT without flags, the helper includes a fresh empty OPT in that reply.
+Other locally generated responses still omit EDNS information, including DNS
+COOKIEs and DNSSEC-related data. A client that requires a COOKIE can discard a
+blocked response; DNSSEC validation of synthesized denials is not provided.
+This is not a general EDNS implementation. Direct DNS, encrypted DNS and
+applications using other resolvers remain outside the filter's coverage.
+
 ## TV handoff
 
 `scripts/tv-handoff.sh` is a controlled, reversible handoff for the TV

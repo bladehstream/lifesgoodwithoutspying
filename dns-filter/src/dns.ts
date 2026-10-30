@@ -203,6 +203,25 @@ export function makeErrorResponse(query: Buffer, parsed: DnsQuery, rcode: number
   return response;
 }
 
+// Preserve ordinary EDNS(0) negotiation for a single empty OPT request.
+// Unknown, malformed, DNSSEC and option-bearing requests retain old behavior.
+// In particular this does not implement COOKIE or authenticated DNS denial.
 export function makeNxDomainResponse(query: Buffer, parsed: DnsQuery): Buffer | null {
-  return makeErrorResponse(query, parsed, RCODE_NXDOMAIN);
+  const response = makeErrorResponse(query, parsed, RCODE_NXDOMAIN);
+  if (!response || parsed.questionCount !== 1 || query.length !== parsed.questionEnd + 11 ||
+      query.readUInt16BE(6) !== 0 || query.readUInt16BE(8) !== 0 || query.readUInt16BE(10) !== 1) return response;
+  const p = parsed.questionEnd;
+  if (query[p] !== 0 || query.readUInt16BE(p + 1) !== 41 ||
+      query.readUInt32BE(p + 5) !== 0 || query.readUInt16BE(p + 9) !== 0) return response;
+  const result = allocBuffer(response.length + 11);
+  response.copy(result, 0);
+  // Fresh OPT, no request-supplied records or options. 1232 is a conservative
+  // advertised UDP receive size, not a limit on TCP or evidence of TV behavior.
+  result.writeUInt8(0, response.length);
+  result.writeUInt16BE(41, response.length + 1);
+  result.writeUInt16BE(1232, response.length + 3);
+  result.writeUInt32BE(0, response.length + 5);
+  result.writeUInt16BE(0, response.length + 9);
+  result.writeUInt16BE(1, 10);
+  return result;
 }
