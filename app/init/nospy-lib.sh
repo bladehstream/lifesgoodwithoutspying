@@ -2,10 +2,15 @@
 # lifesgoodwithoutspying shared helpers
 
 CONF="/var/lib/webosbrew/lifesgoodwithoutspying.conf"
+CONF_APPLIED="/var/lib/webosbrew/lifesgoodwithoutspying.conf-applied"
 HOSTS_GEN="/var/lib/webosbrew/lifesgoodwithoutspying.hosts"
 HOSTS_PENDING="/var/lib/webosbrew/lifesgoodwithoutspying.hosts-pending"
 DNS_BLOCKLIST="/var/lib/webosbrew/lifesgoodwithoutspying.dns"
 CLOCK_SYNC_DELAY=60
+# Token of the current NTP clock worker; removing it stops the worker.
+NTP_TOKEN="/tmp/lifesgoodwithoutspying.ntp"
+# Token of the worker that starts the DNS filter once the network is up.
+DNS_RETRY_TOKEN="/tmp/lifesgoodwithoutspying.dns-retry"
 
 # Defaults
 conf_default() {
@@ -14,9 +19,11 @@ conf_default() {
         domains.smartad)    echo on ;;
         domains.quickset)   echo off ;;
         domains.dashboard)  echo on ;;
+        domains.lgrecommends) echo off ;;
         domains.wiselg)     echo off ;;
         domains.telemetry)  echo on ;;
         domains.sdp)        echo on ;;
+        clock.ntp)          echo off ;;
         domains.lgchannels) echo off ;;
         domains.updates)    echo off ;;
         domains.thinq)      echo off ;;
@@ -48,6 +55,16 @@ is_on() {
     [ "$(conf_get "$1")" = "on" ]
 }
 
+# Print every key with the value it has in the given settings file (default
+# when unset), so two files can be compared by what they mean.
+conf_effective() {
+    for key in $(conf_keys); do
+        v="$(grep "^$key=" "$1" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
+        [ -n "$v" ] || v="$(conf_default "$key")"
+        echo "$key=$v"
+    done
+}
+
 # Persist a key=value pair.
 conf_set() {
     key="$1"
@@ -65,15 +82,15 @@ conf_set() {
 # Newline-separated list of every toggleable key.
 conf_keys() {
     printf '%s\n' \
-        domains.acr domains.smartad domains.quickset domains.dashboard \
-        domains.telemetry domains.sdp domains.lgchannels domains.updates \
+        domains.acr domains.smartad domains.quickset domains.dashboard domains.lgrecommends \
+        domains.telemetry domains.sdp clock.ntp domains.lgchannels domains.updates \
         domains.thinq domains.wiselg dns.filter dns.disable_ipv6 voice.stop ads.stop lan.block purge.boot
 }
 
 # Newline-separated list of domain category keys.
 domain_keys() {
     printf '%s\n' \
-        domains.smartad domains.quickset domains.acr domains.dashboard \
+        domains.smartad domains.quickset domains.acr domains.dashboard domains.lgrecommends \
         domains.telemetry domains.sdp domains.lgchannels domains.updates \
         domains.thinq domains.wiselg
 }
@@ -85,6 +102,7 @@ cat_file_for_key() {
         domains.quickset)   echo "15-quickset.txt" ;;
         domains.acr)        echo "20-acr.txt" ;;
         domains.dashboard)  echo "30-dashboard.txt" ;;
+        domains.lgrecommends) echo "32-lgrecommends.txt" ;;
         domains.wiselg)     echo "35-wiselg.txt" ;;
         domains.telemetry)  echo "40-telemetry.txt" ;;
         domains.sdp)        echo "45-sdp.txt" ;;
@@ -377,6 +395,30 @@ purge_residue() {
     else
         echo "[~] no ACR/voice residue found"
     fi
+}
+
+# Set the clock to a Unix time in seconds. Ask the system service first, so
+# webOS knows the time changed; fall back to setting the kernel clock directly.
+# On webOS 9 with network time on, setSystemTime answers returnValue:true but
+# leaves the clock alone, so the date fallback is what takes effect there.
+# Succeeds only if the clock ends up within 10 seconds of the target.
+set_clock() {
+    target="$1"
+    if command -v luna-send >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
+        bounded script -q -c \
+            "luna-send -n 1 -f luna://com.webos.service.systemservice/time/setSystemTime '{\"utc\":$target}'" \
+            /dev/null >/dev/null 2>&1
+        clock_close_to "$target" && { echo luna; return 0; }
+    fi
+    date -u -s "@$target" >/dev/null 2>&1
+    clock_close_to "$target" && { echo date; return 0; }
+    return 1
+}
+
+clock_close_to() {
+    now="$(date +%s)"
+    diff=$((now - $1))
+    [ "$diff" -ge -10 ] && [ "$diff" -le 10 ]
 }
 
 # Print the process id of a running app, or nothing. luna-send only emits
