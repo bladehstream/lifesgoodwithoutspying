@@ -289,6 +289,64 @@ function queryFor(name: string, id: number): Buffer {
 }
 
 describe('DnsFilterProxy', () => {
+  for (const transport of ['udp', 'tcp'] as const) {
+    it(`rejects multi-question ${transport.toUpperCase()} requests without forwarding`, async () => {
+      const upstream = transport === 'udp' ? await listenUpstream() : await listenTcpUpstream();
+      const config: FilterConfig = {
+        listenAddress: '127.0.0.1', listenPort: 0,
+        upstream: { host: '127.0.0.1', port: upstream.port },
+        blocklistPath: 'unused-in-test', blocklistFormat: 'domains',
+        timeoutMs: 1000, logBlocked: false,
+      };
+      const proxy = new DnsFilterProxy(config, new Blocklist(['blocked.example.test']));
+      const client = dgram.createSocket('udp4');
+      try {
+        await startProxy(proxy);
+        const send = (query: Buffer) => transport === 'udp'
+          ? sendQuery(client, proxy.getListenPort(), query)
+          : sendTcpQuery(proxy.getListenPort(), query);
+        // Establish that this transport really reaches our mock resolver.
+        await send(queryFor('allowed.example.test', 0x2000));
+        expect(upstream.queries).toHaveLength(1);
+        for (const [first, second, id] of [
+          ['allowed.example.test', 'blocked.example.test', 0x2001],
+          ['blocked.example.test', 'allowed.example.test', 0x2002],
+        ] as const) {
+          const one = queryFor(first, id);
+          const two = queryFor(second, id);
+          const request = Buffer.concat([one, two.slice(12)]);
+          request.writeUInt16BE(2, 4);
+          const response = await send(request);
+          expect(response.length).toBe(12);
+          expect(response.readUInt16BE(0)).toBe(id);
+          expect(response.readUInt16BE(2)).toBe(0x8101);
+          expect(response.readUInt16BE(4)).toBe(0);
+          expect(response.readUInt16BE(6)).toBe(0);
+          expect(response.readUInt16BE(8)).toBe(0);
+          expect(response.readUInt16BE(10)).toBe(0);
+        }
+        // Even a header declaring two missing questions is rejected without
+        // forwarding; do not set the recursion-desired bit when it was absent.
+        const truncated = Buffer.alloc(12);
+        truncated.writeUInt16BE(0x2003, 0);
+        truncated.writeUInt16BE(2, 4);
+        const error = await send(truncated);
+        expect(error.length).toBe(12);
+        expect(error.readUInt16BE(0)).toBe(0x2003);
+        expect(error.readUInt16BE(2)).toBe(0x8001);
+        expect(error.readUInt16BE(4)).toBe(0);
+        // Allow any incorrectly forwarded datagram or connection to be delivered.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(upstream.queries).toHaveLength(1);
+      } finally {
+        await stopProxy(proxy);
+        await closeSocket(client);
+        if ('socket' in upstream) await closeSocket(upstream.socket);
+        else await closeServer(upstream.server);
+      }
+    }, 10000);
+  }
+
   it('allows two maximum-sized TCP frames in the receive buffer', async () => {
     expect(MAX_TCP_BUFFER).toBe((65535 + 2) * 2);
 

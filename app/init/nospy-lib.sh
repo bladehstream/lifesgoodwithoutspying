@@ -50,6 +50,17 @@ conf_get() {
     conf_default "$key"
 }
 
+# Cut a log back to its last 200 lines once it passes 64 KiB. The file is
+# replaced, so call this before opening the log for writing: output from an
+# already-open descriptor would land in the discarded copy.
+log_trim() {
+    [ -f "$1" ] || return 0
+    size="$(wc -c < "$1" 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$size" ] && [ "$size" -gt 65536 ]; then
+        tail -n 200 "$1" > "$1.tmp" 2>/dev/null && mv "$1.tmp" "$1"
+    fi
+}
+
 # Exit 0 if the key is "on".
 is_on() {
     [ "$(conf_get "$1")" = "on" ]
@@ -57,12 +68,25 @@ is_on() {
 
 # Print every key with the value it has in the given settings file (default
 # when unset), so two files can be compared by what they mean.
+# The file is read once, as status calls this on every poll and a lookup per
+# key costs several processes. As in conf_get, the last line for a key wins and
+# an empty value means the default.
 conf_effective() {
     for key in $(conf_keys); do
-        v="$(grep "^$key=" "$1" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
-        [ -n "$v" ] || v="$(conf_default "$key")"
-        echo "$key=$v"
-    done
+        printf '%s=' "$key"
+        conf_default "$key"
+    done | awk -v file="$1" '
+        BEGIN {
+            while ((getline line < file) > 0) {
+                i = index(line, "=")
+                if (i > 1) value[substr(line, 1, i - 1)] = substr(line, i + 1)
+            }
+        }
+        {
+            key = substr($0, 1, index($0, "=") - 1)
+            if (value[key] != "") print key "=" value[key]
+            else print
+        }'
 }
 
 # Persist a key=value pair.
@@ -124,16 +148,22 @@ NOSPY_MARKER="# lifesgoodwithoutspying - blocked LG ad/ACR/telemetry endpoints"
 
 # A pending SDP grace-period update is identified by a token so an older
 # delayed worker cannot modify a newer hosts file after a re-apply or disable.
-pending_hosts_current() {
+#
+# pending_read loads the worker's pid and token into pending_pid and
+# pending_token; it fails when there is no pending update.
+pending_read() {
     [ -f "$HOSTS_PENDING" ] || return 1
     read -r pending_pid pending_token < "$HOSTS_PENDING"
+}
+
+pending_hosts_current() {
+    pending_read || return 1
     [ -n "$pending_pid" ] && [ "$pending_token" = "$1" ] || return 1
     kill -0 "$pending_pid" 2>/dev/null
 }
 
 pending_hosts_clear() {
-    [ -f "$HOSTS_PENDING" ] || return 0
-    read -r pending_pid pending_token < "$HOSTS_PENDING"
+    pending_read || return 0
     [ "$pending_token" = "$1" ] && rm -f "$HOSTS_PENDING"
     return 0
 }
@@ -143,8 +173,7 @@ pending_hosts_cancel() {
 }
 
 hosts_pending() {
-    [ -f "$HOSTS_PENDING" ] || return 1
-    read -r pending_pid pending_token < "$HOSTS_PENDING"
+    pending_read || return 1
     [ -n "$pending_pid" ] && [ -n "$pending_token" ] || return 1
     kill -0 "$pending_pid" 2>/dev/null
 }
@@ -167,34 +196,134 @@ hosts_state() {
     fi
 }
 
+# Seconds left in the SDP grace period. Measured from the worker's start in
+# /proc, which keeps counting while the grace period sets the wall clock.
+# Clock ticks are taken as 100 a second, as on every webOS kernel.
+hosts_wait_seconds() {
+    hosts_pending || { echo 0; return 0; }
+    awk -v delay="$CLOCK_SYNC_DELAY" -v stat="/proc/$pending_pid/stat" '
+        BEGIN {
+            if ((getline up < "/proc/uptime") <= 0 || (getline st < stat) <= 0) { print 0; exit }
+            # The fields after "pid (comm) " start at field 3, so starttime
+            # (field 22) is the 20th.
+            sub(/^.*\) /, "", st)
+            split(st, f, " ")
+            left = delay - (up - f[20] / 100)
+            if (left < 0) left = 0
+            if (left > delay) left = delay
+            printf "%d\n", left + 0.999
+        }'
+}
+
 # BusyBox's timeout takes the duration as a bare SECS argument in 1.35 (webOS 9)
 # but only as "-t SECS" in 1.29 (webOS 5/6), and each rejects the other's form
 # outright. The wrong form exits 127 without ever running the command, so ask
-# this build which one it accepts instead of assuming. Probed once per process.
-TIMEOUT_STYLE=""
+# this build which one it accepts instead of assuming. Probed once per run: a
+# valid result inherited from the parent script is kept.
+case "${TIMEOUT_STYLE:-}" in
+    bare|flag|none) ;;
+    *) TIMEOUT_STYLE="" ;;
+esac
+
+# Run a command under a shell watchdog: SIGTERM after SECS seconds, then
+# SIGKILL GRACE seconds later (straight to SIGKILL when GRACE is 0). Returns
+# the command's status. The watchdog's stdio is detached so a caller reading
+# this through a command substitution is not held open until it fires, and
+# cancelling it also stops its sleep, which would otherwise linger until it
+# would have fired.
+run_capped() {
+    c_secs="$1"
+    c_grace="$2"
+    shift 2
+    # A background command gets /dev/null as stdin; hand it the caller's.
+    { "$@" <&3 3<&- & } 3<&0
+    c_pid=$!
+    (
+        trap 'kill "$c_sleep" 2>/dev/null; exit 0' TERM
+        c_sleep=
+        sleep "$c_secs" &
+        c_sleep=$!
+        wait "$c_sleep"
+        if [ "$c_grace" -gt 0 ]; then
+            kill -TERM "$c_pid" 2>/dev/null || exit 0
+            sleep "$c_grace" &
+            c_sleep=$!
+            wait "$c_sleep"
+        fi
+        kill -KILL "$c_pid" 2>/dev/null
+    ) </dev/null >/dev/null 2>&1 &
+    c_dog=$!
+    wait "$c_pid"
+    c_rc=$?
+    kill "$c_dog" 2>/dev/null
+    wait "$c_dog" 2>/dev/null
+    return "$c_rc"
+}
+
+# Run one probe for at most 2 seconds. Under the Homebrew Channel's exec on
+# webOS 4.4 (BusyBox 1.24), timeout never starts its command and only returns
+# once its own limit kills it, so an unguarded probe costs 11 seconds.
+probe_quick() {
+    run_capped 2 0 "$@" </dev/null >/dev/null 2>&1
+}
 
 detect_timeout_style() {
     [ -n "$TIMEOUT_STYLE" ] && return 0
     if ! command -v timeout >/dev/null 2>&1; then
         TIMEOUT_STYLE=none
-    elif timeout 1 sh -c : >/dev/null 2>&1; then
+    elif probe_quick timeout 1 true; then
         TIMEOUT_STYLE=bare
-    elif timeout -t 1 sh -c : >/dev/null 2>&1; then
+    elif probe_quick timeout -t 1 true; then
         TIMEOUT_STYLE=flag
     else
         TIMEOUT_STYLE=none
     fi
+    # Child scripts of the same run (apply, the DNS handoff) skip the probe.
+    export TIMEOUT_STYLE
     return 0
 }
 
-# Run a command with a timeout when one is usable to avoid a hang blocking boot
-bounded() {
+# Run a command for at most SECS seconds. Builds without a usable timeout
+# applet (seen on webOS 4.x) get a shell watchdog instead, as an unbounded
+# luna-send there blocks the whole apply, and with it the app's UI.
+bounded_for() {
+    b_secs="$1"
+    shift
     detect_timeout_style
     case "$TIMEOUT_STYLE" in
-        bare) timeout 10 "$@" ;;
-        flag) timeout -t 10 "$@" ;;
-        *) "$@" ;;
+        # SIGKILL: util-linux script (webOS 4.x) blocks SIGTERM, and once its
+        # child has exited it can wait forever, so a TERM never stops it.
+        bare) timeout -s KILL "$b_secs" "$@"; return $? ;;
+        flag) timeout -t "$b_secs" -s KILL "$@"; return $? ;;
     esac
+    run_capped "$b_secs" 1 "$@"
+}
+
+# Run a command with a timeout to avoid a hang blocking boot or the UI.
+bounded() {
+    bounded_for 10 "$@"
+}
+
+# Start or stop one service unit. webOS 5 and newer run systemd; webOS 4.x and
+# older run Upstart, whose jobs carry the same names without ".service". A unit
+# missing on a given build fails harmlessly. Upstart's stop waits for the job,
+# so it is bounded.
+unit_ctl() {
+    u_action="$1"
+    u_unit="$2"
+    if command -v systemctl >/dev/null 2>&1; then
+        # --no-block: these units take the full 90s stop/start timeout
+        # otherwise, which would stall the whole apply.
+        systemctl --no-block "$u_action" "$u_unit" >/dev/null 2>&1
+    elif command -v initctl >/dev/null 2>&1; then
+        bounded initctl "$u_action" "${u_unit%.service}" >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
+has_unit_manager() {
+    command -v systemctl >/dev/null 2>&1 || command -v initctl >/dev/null 2>&1
 }
 
 # Process targets.
@@ -205,23 +334,46 @@ bounded() {
 # exact /proc/<pid>/exe path, so jailed copies count too. Paths that do not
 # exist on a given build are skipped at apply time.
 
-# Candidate paths for one daemon name: the canonical directories plus any
-# per-app jail copy. Jails hardlink the /usr/sbin binaries and a process may run
-# from the jail path rather than the host one, so both need stubbing. Unmatched
-# jail globs stay literal and are skipped by stub_mount's -f test.
-target_paths() {
-    printf '%s\n' "/usr/sbin/$1" "/usr/bin/$1"
-    printf '%s\n' /var/palm/jail/*/usr/sbin/"$1" /var/palm/jail/*/usr/bin/"$1"
+# The executables each service toggle stops, by name. The names are also what
+# status reports, one proc.<group>.<name> line each.
+VOICE_NAMES="voiceinput voiceinput_network voiceinput_preprocessor voiceinput_hidraw voiceinput_sound voiceconductor voiceclick nlpmanager performer"
+ADS_NAMES="admanager livepick acr2 nudge rdxd uploadd sportsalarm adoverlay-service"
+THINQ_NAMES="trigger_thinq trigger_alexa iot-proxy iot-client mqtt-client lg.thinqai.adapter amazon-alexa-adapter amazon-alexa-vsk"
+SERVICE_GROUPS="voice ads thinq lan"
+
+# "<name> <path>" for every executable one group targets. Each name gets the
+# canonical directories plus any per-app jail copy: jails hardlink the /usr/sbin
+# binaries and a process may run from the jail path rather than the host one, so
+# both need stubbing. Unmatched jail globs stay literal and are skipped by
+# stub_mount's -f test. Launchers and copies outside those directories follow.
+group_targets() {
+    case "$1" in
+        voice) names="$VOICE_NAMES" ;;
+        ads) names="$ADS_NAMES" ;;
+        thinq) names="$THINQ_NAMES" ;;
+        # apply_lan stubs only the host binary, with its own script.
+        lan) printf '%s\n' "upnpd /usr/sbin/upnpd"; return 0 ;;
+        *) return 1 ;;
+    esac
+    for name in $names; do
+        for path in "/usr/sbin/$name" "/usr/bin/$name" \
+                    /var/palm/jail/*/usr/sbin/"$name" /var/palm/jail/*/usr/bin/"$name"; do
+            printf '%s %s\n' "$name" "$path"
+        done
+    done
+    case "$1" in
+        voice) printf '%s\n' "app.voice /usr/bin/com.webos.app.voice" ;;
+        # app launchers that fork the daemons above
+        ads) printf '%s\n' "app.livepick /usr/bin/com.webos.app.livepick" \
+                           "app.livepick-full /usr/bin/com.webos.app.livepick-full" ;;
+        # iot-client also runs from its service directory
+        thinq) printf '%s\n' "iot-client /usr/palm/services/com.webos.service.iotclient/iot-client" ;;
+    esac
 }
 
 # Ad / ACR / telemetry executables.
 ads_execs() {
-    for name in admanager livepick acr2 nudge rdxd uploadd sportsalarm \
-                adoverlay-service; do
-        target_paths "$name"
-    done
-    # app launchers that fork the daemons above
-    printf '%s\n' /usr/bin/com.webos.app.livepick /usr/bin/com.webos.app.livepick-full
+    group_targets ads | awk '{ print $2 }'
 }
 
 # Units the ad / telemetry daemons run under.
@@ -231,12 +383,7 @@ ads_units() {
 
 # Voice / wake-word / NLP executables, plus the voice app launcher.
 voice_execs() {
-    for name in voiceinput voiceinput_network voiceinput_preprocessor \
-                voiceinput_hidraw voiceinput_sound voiceconductor voiceclick \
-                nlpmanager performer; do
-        target_paths "$name"
-    done
-    printf '%s\n' /usr/bin/com.webos.app.voice
+    group_targets voice | awk '{ print $2 }'
 }
 
 voice_units() {
@@ -251,12 +398,7 @@ voice_apps() {
 
 # ThinQ / Alexa / IoT executables (acted on only when domains.thinq is on).
 thinq_execs() {
-    for name in trigger_thinq trigger_alexa iot-proxy iot-client mqtt-client \
-                lg.thinqai.adapter amazon-alexa-adapter amazon-alexa-vsk; do
-        target_paths "$name"
-    done
-    # iot-client also runs from its service directory
-    printf '%s\n' /usr/palm/services/com.webos.service.iotclient/iot-client
+    group_targets thinq | awk '{ print $2 }'
 }
 
 thinq_units() {
@@ -364,81 +506,57 @@ kill_by_paths() {
     echo "[+] stopped target pid(s): $pids"
 }
 
-# Count live processes whose exact exe path is listed in the given file.
-count_running_paths() {
-    list="$1"
-    [ -f "$list" ] || { echo 0; return 0; }
-    proc_exe_table | awk -v list="$list" '
-        BEGIN { while ((getline line < list) > 0) want[line] = 1; close(list) }
-        $2 in want { n++ }
-        END { print n + 0 }'
-}
-
-# Read-only status for known executable paths. Failures must not be reported
-# as stopped. This does not establish complete process or sensor coverage.
-process_inventory_state() {
-    list="$1"
-    stat_root="${2:-/proc}"
-    [ -s "$list" ] || { echo unknown; return 0; }
-    listing_ok=1
-    listing="$(ls -l /proc/[0-9]*/exe 2>/dev/null)" || listing_ok=0
-    [ -n "$listing" ] || { echo unknown; return 0; }
-    state="$(printf '%s\n' "$listing" | awk -v list="$list" -v root="$stat_root" -v listing_ok="$listing_ok" '
-        # Linux PF_KTHREAD is 0x00200000 in the task flags field.
-        # Unknown or unreadable entries remain unknown, never "stopped".
-        function is_kernel_thread(pid, path, stat, fields, n, rc) {
-            sub(/^\/proc\//, "", pid); sub(/\/exe$/, "", pid)
-            path = root "/" pid "/stat"
-            rc = (getline stat < path); close(path)
-            if (rc != 1 || !sub(/^.*\) /, "", stat)) return -1
-            n = split(stat, fields, / +/)
-            if (n < 7 || fields[7] !~ /^[0-9]+$/) return -1
-            return int(fields[7] / 2097152) % 2
-        }
-        # Jailed executables may outlive deletion or be invisible to the
-        # filesystem glob. Compare a standard jail path to the canonical
-        # target, and treat unusual nested paths as uncertain.
-        function jail_match(path, relative, candidate) {
-            if (path !~ /^\/var\/palm\/jail\//) return 0
-            relative = path
-            if (!sub(/^\/var\/palm\/jail\/[^\/]+/, "", relative)) return -1
-            if (relative in want) return 1
-            for (candidate in want) {
-                if (candidate ~ /^\/usr\/(sbin|bin)\// &&
-                    length(relative) > length(candidate) &&
-                    substr(relative, length(relative) - length(candidate) + 1) == candidate)
-                    return -1
-            }
-            return 0
-        }
+# Print the state of every executable the service toggles target, one line
+# per name, then one line per group:
+#   proc.<group>.<name>=running|stopped|absent|unknown
+#   <group>=running|stopped|unknown
+# running  a live process runs from one of the name's paths
+# stopped  one of its paths exists (our stub counts) and none is running
+# absent   none of its paths exists on this TV
+# unknown  the process table could not be read, so running and stopped can't
+#          be told apart
+# A group is running if any name in it is, else unknown if any name is. One
+# /proc scan serves every group. $1 is a scratch file prefix.
+proc_states() {
+    tmp="$1"
+    for group in $SERVICE_GROUPS; do
+        group_targets "$group" | sed "s/^/$group /"
+    done > "$tmp.targets"
+    # One ls for every candidate path: a shell test per path costs about 0.1s
+    # on a TV with many app jails. ls fails for the paths that don't exist,
+    # which is expected; it still lists the ones that do.
+    awk '{ print $3 }' "$tmp.targets" | xargs ls -d 2>/dev/null > "$tmp.exists" || :
+    # The shell running this is always in the table, so an empty one means the
+    # scan failed, not that nothing runs. A process that exits mid-scan only
+    # drops its own line.
+    scan=ok
+    proc_exe_table > "$tmp.procs" || scan=failed
+    [ -s "$tmp.procs" ] || scan=failed
+    awk -v scan="$scan" -v procs="$tmp.procs" -v exists="$tmp.exists" '
         BEGIN {
-            while ((getline line < list) > 0) { want[line] = 1; targets++ }
-            close(list)
-            if (!targets) exit 1
+            if (scan == "ok")
+                while ((getline line < procs) > 0) { split(line, f, " "); run[f[2]] = 1 }
+            while ((getline line < exists) > 0) present[line] = 1
         }
         {
-            target = ""; pid_field = ""
-            for (i = 1; i <= NF; i++) {
-                if ($i == "->") target = $(i + 1)
-                else if ($i ~ /^\/proc\/[0-9]+\/exe$/) pid_field = $i
-            }
-            if (pid_field == "") { bad = 1; next }
-            if (target == "") {
-                if (is_kernel_thread(pid_field) != 1) bad = 1
-                next
-            }
-            seen++
-            jail = jail_match(target)
-            if ((target in want) || jail == 1) running++
-            else if (jail == -1) bad = 1
+            key = $1 "." $2
+            if (!(key in state)) { order[++n] = key; group[key] = $1; state[key] = "absent" }
+            if (scan == "ok" && ($3 in run)) state[key] = "running"
+            else if (($3 in present) && state[key] == "absent") state[key] = (scan == "ok") ? "stopped" : "unknown"
         }
         END {
-            if (running) { print "running"; exit }
-            if (bad || !seen || !targets || !listing_ok) exit 1
-            print "stopped"
-        }
-    ')" || { echo unknown; return 0; }
-    case "$state" in running|stopped) echo "$state" ;; *) echo unknown ;; esac
+            for (i = 1; i <= n; i++) {
+                key = order[i]
+                print "proc." key "=" state[key]
+                g = group[key]
+                if (!(g in gstate)) { gorder[++m] = g; gstate[g] = "stopped" }
+                if (state[key] == "running") gstate[g] = "running"
+                else if (state[key] == "unknown" && gstate[g] != "running") gstate[g] = "unknown"
+            }
+            for (j = 1; j <= m; j++) print gorder[j] "=" gstate[gorder[j]]
+        }' "$tmp.targets"
+    echo "proc_scan=$scan"
+    rm -f "$tmp.targets" "$tmp.exists" "$tmp.procs"
 }
 
 # Delete locally buffered ACR / speech-to-text files. Our own scratch files are
@@ -471,12 +589,14 @@ purge_residue() {
 # Succeeds only if the clock ends up within 10 seconds of the target.
 set_clock() {
     target="$1"
-    if command -v luna-send >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
-        bounded script -q -c \
-            "luna-send -n 1 -f luna://com.webos.service.systemservice/time/setSystemTime '{\"utc\":$target}'" \
-            /dev/null >/dev/null 2>&1
+    started="$(uptime_seconds)"
+    if luna_call luna://com.webos.service.systemservice/time/setSystemTime \
+        "{\"utc\":$target}" >/dev/null; then
         clock_close_to "$target" && { echo luna; return 0; }
     fi
+    # setSystemTime can take seconds to answer (3 on webOS 4.4 during an
+    # apply), so move the target on by that much before setting it directly.
+    target=$((target + $(uptime_seconds) - started))
     date -u -s "@$target" >/dev/null 2>&1
     clock_close_to "$target" && { echo date; return 0; }
     return 1
@@ -488,16 +608,32 @@ clock_close_to() {
     [ "$diff" -ge -10 ] && [ "$diff" -le 10 ]
 }
 
-# Print the process id of a running app, or nothing. luna-send only emits
-# output when it has a tty, so run it under script(1). Both service spellings
+# Whole seconds since boot. Unlike date, setting the clock doesn't move it.
+uptime_seconds() {
+    read -r up _ < /proc/uptime
+    echo "${up%.*}"
+}
+
+# Make one luna call and print its reply. luna-send answers directly on webOS
+# 4.x, so try that first; some builds only print on a tty, so an empty reply
+# is retried under script(1). util-linux script 2.28 (webOS 4.x) can hang
+# after its child exits, which is why it is only the fallback.
+luna_call() {
+    command -v luna-send >/dev/null 2>&1 || return 1
+    reply="$(bounded luna-send -n 1 -f "$1" "$2" </dev/null 2>/dev/null)"
+    if [ -z "$reply" ] && command -v script >/dev/null 2>&1; then
+        reply="$(bounded script -q -c "luna-send -n 1 -f $1 '$2'" \
+            /dev/null </dev/null 2>/dev/null)"
+    fi
+    [ -n "$reply" ] || return 1
+    printf '%s\n' "$reply"
+}
+
+# Print the process id of a running app, or nothing. Both service spellings
 # exist across webOS versions, so try each.
 app_pid() {
-    command -v luna-send >/dev/null 2>&1 || return 0
-    command -v script >/dev/null 2>&1 || return 0
     for svc in com.webos.applicationManager com.webos.service.applicationmanager; do
-        running="$(bounded script -q -c \
-            "luna-send -n 1 -f luna://$svc/running '{}'" \
-            /dev/null 2>/dev/null)" || continue
+        running="$(luna_call "luna://$svc/running" '{}')" || continue
         pid="$(printf '%s\n' "$running" | tr '{},' '\n' | awk -v id="$1" '
             index($0, "\"id\"") && index($0, id) { want = 1; next }
             want && index($0, "\"processid\"") { gsub(/[^0-9]/, ""); print; exit }')"
@@ -516,9 +652,7 @@ app_close() {
         pid="$(app_pid "$id")"
         [ -n "$pid" ] || continue
         for svc in com.webos.applicationManager com.webos.service.applicationmanager; do
-            bounded script -q -c \
-                "luna-send -n 1 -f luna://$svc/close '{\"processId\":\"$pid\"}'" \
-                /dev/null >/dev/null 2>&1
+            luna_call "luna://$svc/close" "{\"processId\":\"$pid\"}" >/dev/null
         done
         echo "[+] asked the application manager to close $id (pid $pid)"
     done
@@ -534,19 +668,19 @@ app_close() {
 
 # Start every unit we may have stopped. Safe when already running.
 units_restore() {
-    command -v systemctl >/dev/null 2>&1 || return 0
+    has_unit_manager || return 0
     { ads_units; voice_units; thinq_units; } | sort -u |
         while IFS= read -r unit; do
             [ -n "$unit" ] || continue
-            systemctl --no-block start "$unit" >/dev/null 2>&1
+            unit_ctl start "$unit"
         done
     return 0
 }
 
 # Restart the SSDP discovery daemon that apply_lan stops.
 ssdp_restore() {
-    command -v systemctl >/dev/null 2>&1 || return 0
-    if systemctl --no-block start ssdp-discovery-lgtv >/dev/null 2>&1; then
+    has_unit_manager || return 0
+    if unit_ctl start ssdp-discovery-lgtv; then
         echo "[+] restarted ssdp-discovery-lgtv"
     fi
 }
@@ -556,7 +690,7 @@ ssdp_restore() {
 # for the stub that is the script name "upnpd", the same as the real binary.
 # The exe link is what tells the two apart.
 upnp_running() {
-    for pid in $(pgrep upnpd 2>/dev/null); do
+    for pid in $(pgrep -x upnpd 2>/dev/null); do
         case "$(readlink "/proc/$pid/exe" 2>/dev/null)" in
             */upnpd) return 0 ;;
         esac
@@ -592,7 +726,7 @@ upnp_unstub() {
             return 1
         fi
     fi
-    for pid in $(pgrep upnpd 2>/dev/null); do
+    for pid in $(pgrep -x upnpd 2>/dev/null); do
         case "$(readlink "/proc/$pid/exe" 2>/dev/null)" in
             */upnpd) ;; # real daemon, leave it alone
             *) kill_with_children "$pid"
@@ -614,15 +748,7 @@ upnp_restore() {
     command -v luna-send >/dev/null 2>&1 || return 0
     # Already up: skip the luna round-trip, which can block for its timeout.
     upnp_running && return 0
-    if command -v script >/dev/null 2>&1; then
-        bounded script -q -c \
-            "luna-send -n 1 -f luna://com.webos.service.upnp/com/palm/luna/private/ping '{}'" \
-            /dev/null >/dev/null 2>&1
-    else
-        bounded luna-send -n 1 -f \
-            luna://com.webos.service.upnp/com/palm/luna/private/ping '{}' \
-            >/dev/null 2>&1
-    fi
+    luna_call luna://com.webos.service.upnp/com/palm/luna/private/ping '{}' >/dev/null
     echo "[+] asked com.webos.service.upnp to start upnpd"
 }
 

@@ -95,6 +95,16 @@ Blank lines and `#` comments are ignored. Plain names match exactly;
 parser extracts the app-generated sink entries instead. Do not include QuickSet
 unless that protection is intentionally enabled.
 
+## Locally blocked DNS replies
+
+A locally blocked name receives a minimal NXDOMAIN. For a single empty
+EDNS(0) OPT without flags, the helper includes a fresh empty OPT in that reply.
+Other locally generated responses still omit EDNS information, including DNS
+COOKIEs and DNSSEC-related data. A client that requires a COOKIE can discard a
+blocked response; DNSSEC validation of synthesized denials is not provided.
+This is not a general EDNS implementation. Direct DNS, encrypted DNS and
+applications using other resolvers remain outside the filter's coverage.
+
 ## TV handoff
 
 `scripts/tv-handoff.sh` is a controlled, reversible handoff for the TV
@@ -145,6 +155,16 @@ DNS filter is explicitly enabled. If IPv6 is preserved, ConnMan may retain an
 IPv6 DHCP nameserver and IPv6 DNS can bypass the IPv4 helper.
 
 ## Deliberate limitations
+
+The helper filters the requested name, not CNAME targets in the upstream
+answer. An allowed name can therefore return an address for a blocked alias
+without a separate query for that blocked name. Domain filtering cannot
+establish that an application will not reach a blocked service.
+
+Locally synthesized errors, including blocked-name NXDOMAIN replies, may omit the
+query's EDNS OPT record and its options. In particular, a client that requires
+DNS COOKIE responses can discard those replies. This may cause retries or a
+lookup failure; it is not evidence that every TV client uses DNS COOKIEs.
 
 The Node helper does not replace ConnMan and is not a firewall by itself. It
 cannot block DNS-over-TLS, DNS-over-HTTPS, direct-IP connections, or a process

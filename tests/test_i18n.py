@@ -39,14 +39,16 @@ class I18nTest(unittest.TestCase):
         cls.strings = load_strings()
         cls.en = cls.strings["en"]
         cls.html = read("index.html")
-        cls.app = read("app.js")
+        # Every frontend script but the string table itself.
+        cls.app = "".join(p.read_text(encoding="utf-8") for p in sorted(APP.glob("*.js"))
+                          if p.name != "i18n.js")
 
     def html_keys(self):
         return re.findall(r'data-i18n(?:-label)?="([^"]+)"', self.html)
 
     def app_keys(self):
         # i18n keys share a handful of prefixes that no toggle data-key uses,
-        # so any app.js literal starting with one of them is a key.
+        # so any script literal starting with one of them is a key.
         prefixes = {key.split(".")[0] for key in self.en}
         return [key for key in re.findall(r"'([\w]+\.[\w.]+)'", self.app)
                 if key.split(".")[0] in prefixes]
@@ -60,11 +62,12 @@ class I18nTest(unittest.TestCase):
         used = set(self.html_keys()) | set(self.app_keys()) | set(re.findall(r"t\('([\w.]+)'", read("i18n.js")))
         self.assertEqual(sorted(set(self.en) - used), [])
 
-    def test_every_layer_is_marked(self):
-        for key in re.findall(r'class="layer" data-key="([^"]+)"', self.html):
-            with self.subTest(layer=key):
-                self.assertIn('data-i18n="layer.%s.title"' % key, self.html)
-                self.assertIn('data-i18n="layer.%s.detail"' % key, self.html)
+    def test_every_toggle_is_marked(self):
+        keys = re.findall(r'class="item[^"]*" data-key="([^"]+)"', self.html)
+        self.assertTrue(keys, "no toggles found in index.html")
+        for key in keys:
+            with self.subTest(toggle=key):
+                self.assertIn('data-i18n="item.%s.title"' % key, self.html)
 
     def test_html_fallback_matches_english(self):
         # The markup keeps English text so the page reads sensibly before the
