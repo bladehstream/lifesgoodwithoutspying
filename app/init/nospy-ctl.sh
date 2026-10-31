@@ -2,9 +2,12 @@
 # lifesgoodwithoutspying control helper.
 #
 # Usage:
-#   nospy-ctl.sh enable|disable|apply|purge|status|log
+#   nospy-ctl.sh enable|disable|apply|purge|status|log|job|joblog
 #   nospy-ctl.sh set <key> on|off   (saves only; run apply to use it)
 #   nospy-ctl.sh get <key>
+#
+# enable, disable and apply start a background job and return at once;
+# poll "job" (or "status") for job=running|done|failed.
 
 INITD="/var/lib/webosbrew/init.d"
 LINK="$INITD/50-lifesgoodwithoutspying"
@@ -37,13 +40,18 @@ blocklist_count() {
 DNS_STATUS_CACHE=""
 DNS_STATUS_LOADED=0
 
-dns_filter_status() {
-    if [ "$DNS_STATUS_LOADED" -eq 0 ]; then
-        if [ -x "$DIR/nospy-dns-filter.sh" ]; then
-            DNS_STATUS_CACHE="$("$DIR/nospy-dns-filter.sh" status 2>/dev/null)"
-        fi
-        DNS_STATUS_LOADED=1
+# Ask the helper once (about 0.6s on a TV). Call this in the main shell before
+# reading fields: they run inside $(...), where a filled cache is thrown away.
+dns_filter_load() {
+    [ "$DNS_STATUS_LOADED" -eq 0 ] || return 0
+    if [ -x "$DIR/nospy-dns-filter.sh" ]; then
+        DNS_STATUS_CACHE="$("$DIR/nospy-dns-filter.sh" status 2>/dev/null)"
     fi
+    DNS_STATUS_LOADED=1
+}
+
+dns_filter_status() {
+    dns_filter_load
     printf '%s\n' "$DNS_STATUS_CACHE"
 }
 
@@ -53,6 +61,115 @@ dns_filter_runtime() {
 
 dns_filter_field() {
     dns_filter_status | sed -n "s/^$1=//p" | head -n 1
+}
+
+# One selftest line per service group, from proc_states output on stdin,
+# naming the listed processes that are running or couldn't be checked.
+# proc.<group>.<name>=<state> lines come first, then <group>=<state>.
+selftest_processes() {
+    awk -F= '
+        $1 ~ /^proc\./ {
+            key = $1
+            sub(/^proc\./, "", key)
+            group = substr(key, 1, index(key, ".") - 1)
+            seen[group] = 1
+            if ($2 == "running" || $2 == "unknown") names[group, $2] = names[group, $2] " " substr(key, index(key, ".") + 1)
+            next
+        }
+        $1 in seen {
+            if ($2 == "running") print "  " $1 ": running (protection NOT active):" names[$1, "running"]
+            else if ($2 == "unknown") print "  " $1 ": unknown (process scan failed):" names[$1, "unknown"]
+            else print "  " $1 ": stopped"
+        }'
+}
+
+# Background jobs.
+#
+# enable, disable and apply used to run the whole apply inside the Homebrew
+# Channel exec call, so the UI waited on every child the apply started. One
+# blocking child (luna-send on webOS 4.x) then froze the app with every button
+# disabled. These now start a detached job and return at once; the UI polls
+# "status" for job=running|done|failed and reads "joblog" afterwards.
+#
+# Both files describe jobs of the current boot only, so they live in /tmp: a
+# pid saved before a reboot can name an unrelated process after it.
+JOB_STATE="/tmp/lifesgoodwithoutspying.job"
+JOB_RESULT="/tmp/lifesgoodwithoutspying.job-result"
+# Hard cap on one job. A stage that outlives it gets SIGTERM, so apply can
+# remove its scratch files, and SIGKILL JOB_GRACE seconds later. The UI always
+# gets an answer instead of polling a job that never ends. The shell acts on
+# SIGTERM only once its current command returns, so JOB_GRACE must outlast
+# bounded's 10 seconds.
+JOB_LIMIT=240
+JOB_GRACE=15
+
+job_running() {
+    [ -f "$JOB_STATE" ] || return 1
+    read -r job_pid job_action < "$JOB_STATE"
+    [ -n "$job_pid" ] || return 1
+    # A pid can also be reused within one boot, so check it is still a job.
+    case " $(tr '\000' ' ' < "/proc/$job_pid/cmdline" 2>/dev/null) " in
+        *" run-job "*) return 0 ;;
+    esac
+    return 1
+}
+
+job_state() {
+    if job_running; then
+        echo running
+    elif [ -f "$JOB_RESULT" ]; then
+        read -r res_action res_rc < "$JOB_RESULT"
+        if [ "$res_rc" = 0 ]; then echo "done"; else echo failed; fi
+    else
+        echo idle
+    fi
+}
+
+job_start() {
+    if job_running; then
+        echo "another change is still being applied ($job_action)" >&2
+        exit 1
+    fi
+    mkdir -p "$(dirname "$LOG")"
+    rm -f "$JOB_RESULT"
+    # Trim now: the job holds the log open, so apply's own trim would split it.
+    log_trim "$LOG"
+    # Detach completely: no stdio may stay tied to the exec call's pipes, or
+    # the Homebrew Channel keeps waiting for them to close. No setsid: it forks
+    # when called from a process-group leader (an SSH shell), and $! would
+    # then name a pid that exits at once while the job is still running.
+    # The Homebrew Channel runs us with LD_PRELOAD=libsystrim.so.3, which makes
+    # every process the job starts about 2.5 times slower to launch (and stops
+    # BusyBox timeout working); the job does not need it.
+    LD_PRELOAD= sh "$SELF" run-job "$1" </dev/null >>"$LOG" 2>&1 &
+    printf '%s %s\n' "$!" "$1" > "$JOB_STATE"
+    echo "job=started"
+}
+
+# The job body, run detached by job_start.
+job_body() {
+    case "$1" in
+        enable)
+            mkdir -p "$INITD"
+            chmod +x "$APPLY" "$REMOVE"
+            run_capped "$JOB_LIMIT" "$JOB_GRACE" "$APPLY"
+            rc=$?
+            ln -sf "$APPLY" "$LINK"
+            return "$rc"
+            ;;
+        disable)
+            rm -f "$LINK"
+            run_capped "$JOB_LIMIT" "$JOB_GRACE" "$REMOVE"
+            ;;
+        apply)
+            chmod +x "$APPLY"
+            run_capped "$JOB_LIMIT" "$JOB_GRACE" "$APPLY"
+            ;;
+        *)
+            echo "unknown job: $1"
+            return 2
+            ;;
+    esac
 }
 
 is_known_key() {
@@ -68,21 +185,34 @@ is_known_key() {
 }
 
 case "$1" in
-    enable)
-        mkdir -p "$INITD"
-        chmod +x "$APPLY" "$REMOVE"
-        "$APPLY"
-        ln -sf "$APPLY" "$LINK"
-        echo "autostart=on"
+    enable|disable|apply)
+        job_start "$1"
         ;;
-    disable)
-        rm -f "$LINK"
-        "$REMOVE"
-        echo "autostart=off"
+    run-job)
+        # Outlive the SSH session it may have been started from.
+        trap '' HUP
+        echo "==== job: $2 $(date) ===="
+        job_body "$2"
+        rc=$?
+        echo "==== $2 finished rc=$rc ===="
+        printf '%s %s\n' "$2" "$rc" > "$JOB_RESULT"
+        if [ -f "$JOB_STATE" ]; then
+            read -r job_pid job_action < "$JOB_STATE"
+            [ "$job_pid" = "$$" ] && rm -f "$JOB_STATE"
+        fi
+        exit "$rc"
         ;;
-    apply)
-        chmod +x "$APPLY"
-        "$APPLY"
+    job)
+        # The job line of status alone. The app polls this while a job runs:
+        # a full status costs a few seconds of CPU that the job would share.
+        echo "job=$(job_state)"
+        ;;
+    joblog)
+        # Everything since the newest job marker: the job plus the apply or
+        # remove output it produced.
+        if [ -f "$LOG" ]; then
+            awk '/^==== job: / { n = 0 } { buf[n++] = $0 } END { for (i = 0; i < n; i++) print buf[i] }' "$LOG"
+        fi
         ;;
     purge)
         purge_residue
@@ -121,8 +251,12 @@ case "$1" in
         else
             echo "autostart=off"
         fi
-        echo "hosts=$(hosts_state)"
+        echo "job=$(job_state)"
+        hosts="$(hosts_state)"
+        echo "hosts=$hosts"
+        [ "$hosts" = waiting ] && echo "hosts_wait=$(hosts_wait_seconds)"
         echo "blocklist=$(blocklist_count)"
+        dns_filter_load
         echo "dns_filter=$(dns_filter_runtime)"
         echo "dns_filter_generation=$(dns_filter_field loaded_generation)"
         echo "dns_filter_rules=$(dns_filter_field loaded_rules)"
@@ -130,24 +264,18 @@ case "$1" in
         echo "dns_filter_ipv6_mode=$(dns_filter_field handoff_ipv6_mode)"
         echo "connman_ipv6=$(dns_filter_field connman_ipv6)"
         echo "stubs=$(stub_count)"
-        conf_keys > "$TMP"
-        while IFS= read -r key; do
-            echo "$key=$(conf_get "$key")"
-        done < "$TMP"
-        rm -f "$TMP"
-        voice_execs > "$TMP.voice"
-        ads_execs > "$TMP.ads"
-        if [ "$(count_running_paths "$TMP.voice")" -gt 0 ]; then
-            echo "voice=running"
-        else
-            echo "voice=stopped"
+        # The saved settings: bare for older frontends, and as saved.<key> so
+        # the UI can tell settings apart from other on/off lines.
+        conf_effective "$CONF" > "$TMP.conf"
+        cat "$TMP.conf"
+        sed 's/^/saved./' "$TMP.conf"
+        # The settings the last apply used, so the UI can mark each unapplied
+        # change. There is no file until the first apply.
+        if [ -f "$CONF_APPLIED" ]; then
+            conf_effective "$CONF_APPLIED" | sed 's/^/applied./'
         fi
-        if [ "$(count_running_paths "$TMP.ads")" -gt 0 ]; then
-            echo "ads=running"
-        else
-            echo "ads=stopped"
-        fi
-        rm -f "$TMP.voice" "$TMP.ads"
+        # Also prints voice= and ads=, which older frontends read.
+        proc_states "$TMP.proc"
         ;;
     selftest)
         echo "== generated host sink (host-side check) =="
@@ -158,6 +286,7 @@ case "$1" in
         echo "== DNS filter (ConnMan handoff) =="
         if is_on dns.filter; then
             echo "configured=on"
+            dns_filter_load
             echo "runtime: $(dns_filter_runtime)"
             echo "handoff IPv6 mode: $(dns_filter_field handoff_ipv6_mode)"
             echo "loaded generation: $(dns_filter_field loaded_generation)"
@@ -231,24 +360,10 @@ case "$1" in
         echo "  ad.lgsmartad.com  http=${code:-none}  curl_rc=$rc"
         echo "  NOTE: curl also uses the mounted /etc/hosts; this is not a TV process test."
         echo
-        echo "== voice processes (effective protection check) =="
-        voice_execs > "$TMP.voice"
-        if [ "$(count_running_paths "$TMP.voice")" -gt 0 ]; then
-            echo "  voice: running (protection NOT active)"
-        else
-            echo "  voice: stopped"
-        fi
-        rm -f "$TMP.voice"
+        echo "== listed processes (effective protection check) =="
+        proc_states "$TMP.proc" | selftest_processes
         echo
-        echo "== ACR / ad services (effective protection check) =="
-        ads_execs > "$TMP.ads"
-        if [ "$(count_running_paths "$TMP.ads")" -gt 0 ]; then
-            echo "  ad processes: running (protection NOT active)"
-        else
-            echo "  ad processes: stopped"
-        fi
-        rm -f "$TMP.ads"
-        echo "  Luna bus entries:"
+        echo "== ACR / ad services on the Luna bus =="
         ls-monitor -l 2>/dev/null | grep -iE 'service\.acr|service\.livepick|colorInfoMiner|service\.admanager|service\.adoverlay|service\.tvdataexchang|acr2|nudge|rdxd|uploadd|sportsalarm' | grep -vi 'wowplay' || echo "  (none)"
         echo
         echo "== buffered ACR / voice residue files =="
@@ -264,7 +379,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "usage: $0 enable|disable|apply|purge|status|selftest|log|set <key> on|off|get <key>" >&2
+        echo "usage: $0 enable|disable|apply|purge|status|selftest|log|job|joblog|set <key> on|off|get <key>" >&2
         exit 2
         ;;
 esac

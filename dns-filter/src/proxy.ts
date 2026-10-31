@@ -6,6 +6,18 @@ import { allocBuffer, copyBuffer } from './buffer';
 import { FilterConfig } from './config';
 import { DnsQuery, makeErrorResponse, makeNxDomainResponse, RCODE_SERVFAIL, parseDnsQuery } from './dns';
 
+// Reject multi-question QUERY messages before matching only the first name.
+function multiQuestionFormerr(message: Buffer): Buffer | null {
+  if (message.length < 12) return null;
+  const flags = message.readUInt16BE(2);
+  if ((flags & 0x8000) !== 0 || ((flags >> 11) & 0x0f) !== 0 ||
+      message.readUInt16BE(4) <= 1) return null;
+  const response = allocBuffer(12);
+  message.copy(response, 0, 0, 2);
+  response.writeUInt16BE(0x8001 | (flags & 0x0100), 2);
+  return response;
+}
+
 export const MAX_TCP_PAYLOAD = 65535;
 export const MAX_TCP_BUFFER = (MAX_TCP_PAYLOAD + 2) * 2;
 
@@ -241,6 +253,9 @@ export class DnsFilterProxy {
       return;
     }
 
+    const formerr = multiQuestionFormerr(message);
+    if (formerr !== null) { this.sendUdp(formerr, remote.port, remote.address); return; }
+
     const query = parseDnsQuery(message);
     if (query === null) {
       this.log('dropped malformed UDP DNS message');
@@ -463,6 +478,9 @@ export class DnsFilterProxy {
   }
 
   private handleTcpQuery(query: Buffer, callback: (response: Buffer | null) => void): void {
+    const formerr = multiQuestionFormerr(query);
+    if (formerr !== null) { callback(formerr); return; }
+
     const parsed = parseDnsQuery(query);
     if (parsed === null) {
       this.log('dropped malformed TCP DNS message');

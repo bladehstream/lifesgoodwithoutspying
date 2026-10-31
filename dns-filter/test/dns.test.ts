@@ -48,6 +48,63 @@ describe('DNS wire helpers', () => {
     expect(response!.slice(12)).toEqual(query.slice(12));
   });
 
+  it('returns a fresh empty OPT only for an ordinary empty EDNS(0) query', () => {
+    const base = queryFor('ads.example.test', 0x4321);
+    const makeEdns = (opt: Buffer): Buffer => {
+      const header = Buffer.from(base);
+      header.writeUInt16BE(1, 10);
+      return Buffer.concat([header, opt]);
+    };
+    const plainOpt = Buffer.from([0, 0, 41, 0x10, 0, 0, 0, 0, 0, 0, 0]);
+    const query = makeEdns(plainOpt);
+    const response = makeNxDomainResponse(query, parseDnsQuery(query)!)!;
+    expect(response.readUInt16BE(0)).toBe(0x4321);
+    expect(response.readUInt16BE(2) & 15).toBe(3);
+    expect(response.readUInt16BE(4)).toBe(1);
+    expect(response.readUInt16BE(6)).toBe(0);
+    expect(response.readUInt16BE(8)).toBe(0);
+    expect(response.readUInt16BE(10)).toBe(1);
+    expect(response.slice(12, base.length)).toEqual(base.slice(12));
+    // The result advertises this helper's receive size, not a copied client value.
+    expect(response.slice(base.length)).toEqual(Buffer.from([0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0]));
+    expect(makeNxDomainResponse(base, parseDnsQuery(base)!)!.readUInt16BE(10)).toBe(0);
+  });
+
+  it('leaves unsupported or malformed EDNS and COOKIE behavior unchanged', () => {
+    const base = queryFor('ads.example.test');
+    const header = Buffer.from(base);
+    header.writeUInt16BE(1, 10);
+    const request = (opt: Buffer) => Buffer.concat([header, opt]);
+    const opts = [
+      Buffer.from([0, 0, 41, 4, 208, 0, 0, 128, 0, 0, 0]), // DO
+      Buffer.from([0, 0, 41, 4, 208, 0, 1, 0, 0, 0, 0]), // EDNS version 1
+      Buffer.from([0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 4, 0, 12, 0, 0]), // padding option
+      Buffer.from([0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 12, 0, 10, 0, 8, 1, 2, 3, 4, 5, 6, 7, 8]),
+      Buffer.from([0, 0, 41, 4, 208, 0, 0, 0, 0, 0]), // truncated
+      Buffer.from([0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0, 0]), // trailing byte
+      Buffer.from([0, 0, 40, 4, 208, 0, 0, 0, 0, 0, 0]), // not OPT
+    ];
+    for (const opt of opts) {
+      const q = request(opt);
+      const r = makeNxDomainResponse(q, parseDnsQuery(q)!)!;
+      expect(r.readUInt16BE(2) & 15).toBe(3);
+      expect(r.readUInt16BE(10)).toBe(0);
+      expect(r.length).toBe(base.length);
+    }
+  });
+
+  it('does not add OPT when DNS section counts are inconsistent', () => {
+    const base = queryFor('ads.example.test');
+    const opt = Buffer.from([0, 0, 41, 4, 208, 0, 0, 0, 0, 0, 0]);
+    for (const countOffset of [6, 8, 10]) {
+      const q = Buffer.concat([base, opt]);
+      q.writeUInt16BE(1, 10);
+      q.writeUInt16BE(countOffset === 10 ? 2 : 1, countOffset);
+      const r = makeNxDomainResponse(q, parseDnsQuery(q)!)!;
+      expect(r.readUInt16BE(10)).toBe(0);
+    }
+  });
+
   it('normalizes valid names and rejects malformed names', () => {
     expect(normalizeDomain(' Example.COM. ')).toBe('example.com');
     expect(normalizeDomain('bad name')).toBe('');

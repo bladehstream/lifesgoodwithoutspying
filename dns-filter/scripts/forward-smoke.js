@@ -22,6 +22,7 @@ let child = null;
 let upstreamUdp = null;
 let upstreamTcp = null;
 let finished = false;
+let upstreamQueryCount = 0;
 
 function cleanup() {
   if (finished) {
@@ -104,6 +105,7 @@ function startUpstream() {
   return new Promise((resolve, reject) => {
     upstreamUdp = dgram.createSocket('udp4');
     upstreamUdp.on('message', (message, remote) => {
+      upstreamQueryCount += 1;
       const answer = makeAnswer(message);
       upstreamUdp.send(answer, 0, answer.length, remote.port, remote.address);
     });
@@ -115,6 +117,7 @@ function startUpstream() {
         socket.on('data', (chunk) => {
           buffer = Buffer.concat([buffer, chunk]);
           if (buffer.length >= 2 && buffer.length >= buffer.readUInt16BE(0) + 2) {
+            upstreamQueryCount += 1;
             socket.end(frame(makeAnswer(buffer.slice(2, buffer.readUInt16BE(0) + 2))));
           }
         });
@@ -192,6 +195,27 @@ function expectAnswer(response, id, rcode, description) {
   expectAnswer(await queryUdp(listenPort, makeQuery(0x2222, 'allowed.example.test')), 0x2222, 0, 'forwarded UDP');
   expectAnswer(await queryTcp(listenPort, makeQuery(0x3333, 'blocked.example.test')), 0x3333, 3, 'blocked TCP');
   expectAnswer(await queryTcp(listenPort, makeQuery(0x4444, 'allowed.example.test')), 0x4444, 0, 'forwarded TCP');
+
+  const beforeMulti = upstreamQueryCount;
+  for (const firstBlocked of [false, true]) {
+    const first = firstBlocked ? 'blocked.example.test' : 'allowed.example.test';
+    const second = firstBlocked ? 'allowed.example.test' : 'blocked.example.test';
+    const request = Buffer.concat([makeQuery(0x5555, first), makeQuery(0, second).slice(12)]);
+    request.writeUInt16BE(2, 4);
+    for (const send of [queryUdp, queryTcp]) {
+      const response = await send(listenPort, request);
+      expectAnswer(response, 0x5555, 1, 'multi-question FORMERR');
+      if (response.length !== 12 || response.readUInt16BE(4) !== 0 ||
+          response.readUInt16BE(6) !== 0 || response.readUInt16BE(8) !== 0 ||
+          response.readUInt16BE(10) !== 0) {
+        throw new Error('multi-question FORMERR must contain only an empty header');
+      }
+    }
+  }
+  await sleep(50);
+  if (upstreamQueryCount !== beforeMulti) {
+    throw new Error('multi-question request reached upstream');
+  }
 
   console.log('forwarding smoke passed');
   cleanup();

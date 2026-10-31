@@ -63,41 +63,91 @@ NAT_STARTED=0
 # BusyBox's timeout takes the duration as a bare SECS argument in 1.35 (webOS 9)
 # but only as "-t SECS" in 1.29 (webOS 5/6), and each rejects the other's form
 # outright. The wrong form exits 127 without ever running the command, so ask
-# this build which one it accepts instead of assuming. Probed once per process.
+# this build which one it accepts instead of assuming. Probed once per run: a
+# valid result inherited from the parent script is kept.
 # Duplicated from nospy-lib.sh so this script stays standalone.
-TIMEOUT_STYLE=""
+case "${TIMEOUT_STYLE:-}" in
+    bare|flag|none) ;;
+    *) TIMEOUT_STYLE="" ;;
+esac
 
 log() {
     echo "dns-filter: $*"
+}
+
+# Run a command under a shell watchdog: SIGTERM after SECS seconds, then
+# SIGKILL GRACE seconds later (straight to SIGKILL when GRACE is 0). Returns
+# the command's status. The watchdog's stdio is detached so a caller reading
+# this through a command substitution is not held open until it fires, and
+# cancelling it also stops its sleep, which would otherwise linger until it
+# would have fired.
+run_capped() {
+    c_secs="$1"
+    c_grace="$2"
+    shift 2
+    # A background command gets /dev/null as stdin; hand it the caller's.
+    { "$@" <&3 3<&- & } 3<&0
+    c_pid=$!
+    (
+        trap 'kill "$c_sleep" 2>/dev/null; exit 0' TERM
+        c_sleep=
+        sleep "$c_secs" &
+        c_sleep=$!
+        wait "$c_sleep"
+        if [ "$c_grace" -gt 0 ]; then
+            kill -TERM "$c_pid" 2>/dev/null || exit 0
+            sleep "$c_grace" &
+            c_sleep=$!
+            wait "$c_sleep"
+        fi
+        kill -KILL "$c_pid" 2>/dev/null
+    ) </dev/null >/dev/null 2>&1 &
+    c_dog=$!
+    wait "$c_pid"
+    c_rc=$?
+    kill "$c_dog" 2>/dev/null
+    wait "$c_dog" 2>/dev/null
+    return "$c_rc"
+}
+
+# Run one probe for at most 2 seconds. Under the Homebrew Channel's exec on
+# webOS 4.4 (BusyBox 1.24), timeout never starts its command and only returns
+# once its own limit kills it, so an unguarded probe costs 11 seconds.
+probe_quick() {
+    run_capped 2 0 "$@" </dev/null >/dev/null 2>&1
 }
 
 detect_timeout_style() {
     [ -n "$TIMEOUT_STYLE" ] && return 0
     if ! command -v timeout >/dev/null 2>&1; then
         TIMEOUT_STYLE=none
-    elif timeout 1 sh -c : >/dev/null 2>&1; then
+    elif probe_quick timeout 1 true; then
         TIMEOUT_STYLE=bare
-    elif timeout -t 1 sh -c : >/dev/null 2>&1; then
+    elif probe_quick timeout -t 1 true; then
         TIMEOUT_STYLE=flag
     else
         TIMEOUT_STYLE=none
     fi
+    # Child scripts of the same run (apply, the DNS handoff) skip the probe.
+    export TIMEOUT_STYLE
     if [ "$TIMEOUT_STYLE" = none ]; then
         # stderr, because callers read this through a command substitution.
-        log "no usable timeout on this build; running without a time limit" >&2
+        log "no usable timeout on this build; using a shell watchdog" >&2
     fi
     return 0
 }
 
-# Run a command with a timeout when one is usable, so one slow helper call
-# cannot stall an apply or a boot hook.
+# Run a command with a timeout, so one slow helper call cannot stall an apply
+# or a boot hook. Builds without a usable timeout applet (webOS 4.x) get the
+# shell watchdog instead.
 bounded() {
     detect_timeout_style
     case "$TIMEOUT_STYLE" in
-        bare) timeout 10 "$@" ;;
-        flag) timeout -t 10 "$@" ;;
-        *) "$@" ;;
+        # SIGKILL: util-linux script (webOS 4.x) blocks SIGTERM.
+        bare) timeout -s KILL 10 "$@"; return $? ;;
+        flag) timeout -t 10 -s KILL "$@"; return $? ;;
     esac
+    run_capped 10 1 "$@"
 }
 
 die() {
@@ -188,8 +238,13 @@ configure_connman_bus() {
 # so a network name is never read as a flag, and take Ready as well as Online:
 # ConnMan stays at Ready whenever its online check fails, which says nothing
 # about whether the link works.
+#
+# connmanctl spins at full CPU and never answers when its stdin is at EOF,
+# which is what /dev/null gives it at boot (seen on webOS 4.4). A pty from
+# script(1) keeps it working; tr drops the pty's carriage returns.
 active_service_ids() {
-    connmanctl services 2>/dev/null |
+    bounded script -q -c "connmanctl services" /dev/null </dev/null 2>/dev/null |
+        tr -d '\r' |
         awk 'substr($0, 3, 1) ~ /[OR]/ { print $NF }'
 }
 
@@ -373,7 +428,7 @@ connman_config() {
         done
         printf '\nexit\n'
     } > "$command_file"
-    script -q -c connmanctl /dev/null < "$command_file" >/dev/null 2>&1
+    bounded script -q -c connmanctl /dev/null < "$command_file" >/dev/null 2>&1
     result=$?
     rm -f "$command_file"
     return "$result"
@@ -765,6 +820,9 @@ enable_handoff() {
     esac
     [ -f "$STATE_FILE" ] && die "handoff is already enabled; run disable first"
     require_command connmanctl
+    # ConnMan discovery reads service properties over busctl. webOS 4.x ships
+    # without it; fail now instead of retrying discovery for 30 seconds.
+    require_command busctl
     require_command iptables
     require_command ip
     require_command script
