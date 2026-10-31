@@ -1,20 +1,30 @@
 'use strict';
 const fs = require('fs'), vm = require('vm'), assert = require('assert');
 const source = fs.readFileSync('app/app.js', 'utf8');
-function section(a,b) { return source.slice(source.indexOf('    function '+a),source.indexOf('    function '+b)); }
-const state = {on:false}, detail = {textContent:''};
-const purge = {disabled:true,classList:{toggle(k,v){state[k]=v;},contains(k){return !!state[k];}},
- getAttribute(k){return {'data-key':'purge.boot','data-unavailable':'true'}[k] || null;},
- setAttribute(k,v){this[k]=v;},querySelector(){return detail;}};
-const now = {disabled:true,classList:{contains(){return false;}},getAttribute(k){return k === 'data-unavailable' ? 'true' : null;}};
-const ui = {setText(el, key) { el.textContent = key; }, toggleButtons:()=>[purge],allButtons:()=>[purge,now],uiBusy:false,
- document:{getElementById:()=>null,activeElement:null},restoreFocus:null,HTMLButtonElement:function(){},
- stopStatusPolling(){},scheduleStatusPolling(){},invalidateNavigation(){}};
+function section(start, end) { return source.slice(source.indexOf(start), source.indexOf(end)); }
+const detail = {}, classes = {};
+const purge = { disabled: false, classList: { toggle(k, v) { classes[k] = v; } },
+    getAttribute() { return 'purge.boot'; }, setAttribute(k, v) { this[k] = v; },
+    querySelector() { return detail; } };
+const elements = { 'sdp-detail': {}, 'root-dot': {}, 'root-text': {}, 'app-version': {},
+    'btn-purge': {}, 'btn-selftest': {}, 'btn-language': {} };
+const ui = { root: true, busy: false, model: {saved: {'purge.boot': true}, dirty: {}, groups: []},
+    appVersion: '', byId(id) { return elements[id]; },
+    each(selector, fn) { if (selector === '.item[data-key]') fn(purge); },
+    setText(el, key) { el.key = key; } };
 vm.createContext(ui);
-vm.runInContext(section('renderToggles','updateMainButton') + section('busy','run'),ui);
-ui.renderToggles({'purge.boot':'on'}); assert.equal(purge.disabled,false); ui.busy(false);
-assert.equal(purge['aria-checked'],'true'); assert.equal(detail.textContent,'layer.purge.boot.savedOn'); assert.equal(now.disabled,true);
-ui.busy(true); assert.equal(purge.disabled,true);
-ui.renderToggles({'purge.boot':'off'}); ui.busy(false);
-assert.equal(purge.disabled,true); assert.equal(purge['aria-checked'],'false');
-console.log('Legacy purge selection UI check passed');
+vm.runInContext(section('    function renderPanes()', '    // Each category') +
+    section('    var ROOT_TEXT', '    function render()'), ui);
+ui.renderPanes(); ui.renderFooter();
+assert.equal(purge.disabled, false);
+assert.equal(purge['aria-checked'], 'true');
+assert.equal(detail.key, 'item.purge.boot.savedOn');
+assert.equal(elements['btn-purge'].disabled, true);
+ui.busy = true; ui.renderPanes(); assert.equal(purge.disabled, true);
+ui.busy = false; ui.model.saved['purge.boot'] = false; ui.renderPanes();
+assert.equal(purge.disabled, true);
+assert.equal(purge['aria-checked'], 'false');
+assert.equal(detail.key, 'item.purge.boot.detail');
+ui.model.saved['purge.boot'] = true; ui.root = false; ui.renderPanes();
+assert.equal(purge.disabled, true);
+console.log('Purge UI availability and saved-setting checks passed');
